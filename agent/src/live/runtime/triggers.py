@@ -90,6 +90,63 @@ _US_EQUITY_HOLIDAYS: frozenset[date] = frozenset(
     }
 )
 
+# China A-share market holidays (2025-2026). Static set; extend as needed.
+_CN_EQUITY_HOLIDAYS: frozenset[date] = frozenset(
+    {
+        # 2025
+        date(2025, 1, 1),   # New Year's Day
+        date(2025, 1, 28),  # Spring Festival (除夕)
+        date(2025, 1, 29),  # Spring Festival
+        date(2025, 1, 30),  # Spring Festival
+        date(2025, 1, 31),  # Spring Festival
+        date(2025, 2, 3),   # Spring Festival
+        date(2025, 2, 4),   # Spring Festival
+        date(2025, 4, 4),   # Qingming Festival
+        date(2025, 4, 5),   # Qingming Festival
+        date(2025, 4, 6),   # Qingming Festival
+        date(2025, 5, 1),   # Labour Day
+        date(2025, 5, 2),   # Labour Day
+        date(2025, 5, 3),   # Labour Day
+        date(2025, 5, 4),   # Labour Day
+        date(2025, 5, 5),   # Labour Day
+        date(2025, 5, 31),  # Dragon Boat Festival
+        date(2025, 6, 1),   # Dragon Boat Festival
+        date(2025, 6, 2),   # Dragon Boat Festival
+        date(2025, 10, 1),  # National Day
+        date(2025, 10, 2),  # National Day
+        date(2025, 10, 3),  # National Day
+        date(2025, 10, 6),  # National Day
+        date(2025, 10, 7),  # National Day
+        date(2025, 10, 8),  # National Day
+        # 2026
+        date(2026, 1, 1),   # New Year's Day
+        date(2026, 2, 17),  # Spring Festival (estimated)
+        date(2026, 2, 18),  # Spring Festival
+        date(2026, 2, 19),  # Spring Festival
+        date(2026, 2, 20),  # Spring Festival
+        date(2026, 2, 23),  # Spring Festival
+        date(2026, 2, 24),  # Spring Festival
+        date(2026, 4, 4),   # Qingming Festival (estimated)
+        date(2026, 4, 5),   # Qingming Festival
+        date(2026, 4, 6),   # Qingming Festival
+        date(2026, 5, 1),   # Labour Day
+        date(2026, 5, 2),   # Labour Day
+        date(2026, 5, 3),   # Labour Day
+        date(2026, 5, 4),   # Labour Day
+        date(2026, 5, 5),   # Labour Day
+        date(2026, 6, 19),  # Dragon Boat Festival (estimated)
+        date(2026, 6, 20),  # Dragon Boat Festival
+        date(2026, 6, 21),  # Dragon Boat Festival
+        date(2026, 10, 1),  # National Day
+        date(2026, 10, 2),  # National Day
+        date(2026, 10, 3),  # National Day
+        date(2026, 10, 5),  # National Day
+        date(2026, 10, 6),  # National Day
+        date(2026, 10, 7),  # National Day
+        date(2026, 10, 8),  # National Day
+    }
+)
+
 _WEEKDAYS_MON_FRI = frozenset({0, 1, 2, 3, 4})
 
 # Market registry. Keys match the AssetClass-style identifiers the runner uses
@@ -101,6 +158,13 @@ MARKET_SPECS: Mapping[str, _MarketSpec] = {
         close_time=time(16, 0),
         weekdays=_WEEKDAYS_MON_FRI,
         holidays=_US_EQUITY_HOLIDAYS,
+    ),
+    "china_a_share": _MarketSpec(
+        tz="Asia/Shanghai",
+        open_time=time(9, 30),
+        close_time=time(15, 0),
+        weekdays=_WEEKDAYS_MON_FRI,
+        holidays=_CN_EQUITY_HOLIDAYS,
     ),
     "crypto": _MarketSpec(
         tz="UTC",
@@ -253,7 +317,13 @@ def market_is_open_at(market: str, now_ms: int) -> bool:
         return False
     if local_dt.date() in spec.holidays:
         return False
-    return spec.open_time <= local_dt.time() < spec.close_time
+    t = local_dt.time()
+    # China A-share has a lunch break 11:30-13:00; model as two sessions.
+    if market == "china_a_share":
+        morning = time(9, 30) <= t < time(11, 30)
+        afternoon = time(13, 0) <= t < time(15, 0)
+        return morning or afternoon
+    return spec.open_time <= t < spec.close_time
 
 
 def due_now(trigger: Trigger, now_ms: int, *, event_state: Mapping[str, object] | None = None) -> bool:
