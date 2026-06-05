@@ -12,6 +12,7 @@ from typing import Any
 
 import requests
 
+from src.ashare.backtest.limit_up_backtest import run_limit_up_backtest
 from src.agent.tools import BaseTool
 
 
@@ -30,6 +31,74 @@ def _post(path: str, json_body: dict | None = None, params: dict | None = None) 
     res = requests.post(f"{_api_base()}{path}", json=json_body, params=params, timeout=60)
     res.raise_for_status()
     return res.json()
+
+
+class AShareBacktestTool(BaseTool):
+    """Run A-share limit-up strategy backtest."""
+
+    name = "ashare_backtest"
+    description = (
+        "运行A股连板策略回测。模拟在涨停时买入、次日卖出的交易策略，"
+        "返回胜率、收益率、最大回撤等指标。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "start_date": {
+                "type": "string",
+                "description": "回测开始日期，格式 YYYY-MM-DD",
+            },
+            "end_date": {
+                "type": "string",
+                "description": "回测结束日期，格式 YYYY-MM-DD",
+            },
+            "min_days": {
+                "type": "integer",
+                "description": "最小连板天数（默认2）",
+                "default": 2,
+            },
+            "max_days": {
+                "type": "integer",
+                "description": "最大连板天数（默认10）",
+                "default": 10,
+            },
+            "hold_days": {
+                "type": "integer",
+                "description": "持有天数（默认1）",
+                "default": 1,
+            },
+        },
+        "required": ["start_date", "end_date"],
+    }
+    repeatable = True
+    is_readonly = True
+
+    def execute(
+        self,
+        start_date: str,
+        end_date: str,
+        min_days: int = 2,
+        max_days: int = 10,
+        hold_days: int = 1,
+        **kwargs: Any,
+    ) -> str:
+        try:
+            result = run_limit_up_backtest(
+                start_date=start_date,
+                end_date=end_date,
+                min_days=min_days,
+                max_days=max_days,
+                hold_days=hold_days,
+            )
+            return json.dumps(
+                {"status": "success", **result},
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as exc:
+            return json.dumps(
+                {"status": "error", "error": str(exc)}, ensure_ascii=False
+            )
 
 
 class AShareLimitUpTool(BaseTool):

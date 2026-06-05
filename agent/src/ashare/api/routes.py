@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.ashare.backtest.limit_up_backtest import run_limit_up_backtest
 from src.ashare.models.limit_up import LimitUpDaily
 from src.ashare.models.portfolio import Portfolio, Trade, TradeSide
 from src.ashare.storage.limit_up_store import LimitUpStore
@@ -343,3 +344,28 @@ async def ashare_events():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# Backtest routes
+# --------------------------------------------------------------------------- #
+
+class BacktestRequest(BaseModel):
+    start_date: date
+    end_date: date
+    min_days: int = Field(default=2, ge=1, le=20)
+    max_days: int = Field(default=10, ge=1, le=20)
+    hold_days: int = Field(default=1, ge=1, le=10)
+
+
+@router.post("/backtest/limit-up")
+def run_backtest_limit_up(body: BacktestRequest) -> dict[str, Any]:
+    """Run limit-up strategy backtest."""
+    result = run_limit_up_backtest(
+        start_date=body.start_date,
+        end_date=body.end_date,
+        min_days=body.min_days,
+        max_days=body.max_days,
+        hold_days=body.hold_days,
+    )
+    return result
