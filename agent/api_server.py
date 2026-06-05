@@ -582,6 +582,21 @@ async def _run_startup_preflight() -> None:
 
     run_preflight(console)
 
+    # Start A-share scheduled tasks (ported from Ruo.ai)
+    from src.ashare.scheduler import AShareScheduler
+
+    global _ashare_scheduler
+    _ashare_scheduler = AShareScheduler()
+    _ashare_scheduler.start()
+
+
+@app.on_event("shutdown")
+async def _run_shutdown() -> None:
+    """Graceful shutdown: stop A-share scheduler."""
+    global _ashare_scheduler
+    if _ashare_scheduler is not None:
+        await _ashare_scheduler.stop()
+
 
 # ============================================================================
 # API Key Authentication
