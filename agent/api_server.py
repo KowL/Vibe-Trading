@@ -514,6 +514,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# A-share extension (ported from Ruo.ai)
+from src.ashare.api import router as ashare_router
+
+app.include_router(ashare_router)
+
 
 # ----------------------------------------------------------------------------
 # SPA deep-link fallback
