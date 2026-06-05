@@ -10,15 +10,18 @@ Endpoints:
     POST /ashare/portfolios/{id}/trades   record a trade
     POST /ashare/reports/{kind}           generate market report (open/close/weekly)
     GET  /ashare/reports/{kind}/{date}    fetch persisted report markdown
+    GET  /ashare/events                   SSE stream for real-time market events
 """
 
 from __future__ import annotations
 
-from datetime import date
+import asyncio
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.ashare.models.limit_up import LimitUpDaily
@@ -291,3 +294,52 @@ def get_report(kind: ReportKind, trade_date: date) -> dict[str, str]:
     if not path.exists():
         raise HTTPException(status_code=404, detail="Report not found")
     return {"kind": kind.value, "trade_date": trade_date.isoformat(), "markdown": path.read_text(encoding="utf-8")}
+
+
+# --------------------------------------------------------------------------- #
+# SSE events
+# --------------------------------------------------------------------------- #
+
+@router.get("/events")
+async def ashare_events():
+    """SSE stream for A-share real-time market events.
+
+    Events:
+        - ashare_limit_up_sync: 涨停数据同步完成
+        - ashare_market_report: 市场报告生成完成
+        - ashare_scheduler_heartbeat: 调度器心跳
+    """
+    from src.ashare.live_publisher import get_publisher
+    from src.session.events import SSEEvent
+
+    pub = get_publisher()
+
+    async def event_generator():
+        # Send initial connection event
+        yield SSEEvent(
+            event_type="connected",
+            data={"channel": "ashare", "timestamp": datetime.now().isoformat()},
+        ).to_sse()
+
+        # Subscribe to ashare_broadcast channel
+        if pub.event_bus:
+            async for event in pub.event_bus.subscribe("ashare_broadcast", replay_all=True):
+                yield event.to_sse()
+        else:
+            # No event bus configured, send heartbeat only
+            while True:
+                await asyncio.sleep(30)
+                yield SSEEvent(
+                    event_type="heartbeat",
+                    data={"ts": datetime.now().isoformat()},
+                ).to_sse()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

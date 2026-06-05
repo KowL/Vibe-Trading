@@ -51,6 +51,7 @@ function LimitUpTab() {
   const [records, setRecords] = useState<LimitUpRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [lastSync, setLastSync] = useState<string>("");
 
   const load = async () => {
     setLoading(true);
@@ -74,6 +75,23 @@ function LimitUpTab() {
     }
   };
 
+  // SSE real-time events
+  useEffect(() => {
+    const es = new EventSource("/ashare/events");
+    es.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        if (event.event_type === "ashare_limit_up_sync") {
+          setLastSync(`${event.trade_date} 同步完成: ${event.count} 条`);
+          if (event.trade_date === date) load();
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+    return () => es.close();
+  }, [date]);
+
   useEffect(() => { load(); }, [date]);
 
   return (
@@ -81,6 +99,9 @@ function LimitUpTab() {
       <div className="flex items-center justify-between p-4 border-b">
         <h2 className="font-semibold">涨停梯队 — {date}</h2>
         <div className="flex items-center gap-2">
+          {lastSync && (
+            <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded">{lastSync}</span>
+          )}
           <input
             type="date"
             value={date}

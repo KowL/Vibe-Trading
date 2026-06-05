@@ -1587,6 +1587,12 @@ def _get_session_service():
     except RuntimeError:
         pass
 
+    # Wire A-share live publisher to the session event bus
+    from src.ashare.live_publisher import get_publisher, set_publisher, AShareLivePublisher
+    pub = get_publisher()
+    pub.set_event_bus(event_bus)
+    set_publisher(pub)
+
     _session_service = SessionService(
         store=store,
         event_bus=event_bus,

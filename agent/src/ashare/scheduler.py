@@ -168,14 +168,33 @@ class AShareTaskRunner:
 
     async def _run(self, task_id: str) -> Any:
         if task_id == "limit_up_sync":
-            return await self.limit_up_task.run()
+            result = await self.limit_up_task.run()
+            # Publish SSE event
+            from src.ashare.live_publisher import get_publisher
+            pub = get_publisher()
+            if hasattr(result, 'trade_date') and hasattr(result, 'count'):
+                pub.publish_limit_up_sync(result.trade_date, result.count, result.source)
+            return result
         if task_id == "market_report_open":
-            return await self.report_task.run(ReportKind.OPEN)
+            result = await self.report_task.run(ReportKind.OPEN)
+            self._publish_report(result, "open")
+            return result
         if task_id == "market_report_close":
-            return await self.report_task.run(ReportKind.CLOSE)
+            result = await self.report_task.run(ReportKind.CLOSE)
+            self._publish_report(result, "close")
+            return result
         if task_id == "market_report_weekly":
-            return await self.report_task.run(ReportKind.WEEKLY)
+            result = await self.report_task.run(ReportKind.WEEKLY)
+            self._publish_report(result, "weekly")
+            return result
         raise ValueError(f"unknown task: {task_id}")
+
+    def _publish_report(self, result: Any, kind: str) -> None:
+        """Publish report generation event."""
+        from src.ashare.live_publisher import get_publisher
+        pub = get_publisher()
+        if hasattr(result, 'trade_date') and hasattr(result, 'title'):
+            pub.publish_market_report(kind, result.trade_date, result.title)
 
 
 # --------------------------------------------------------------------------- #
