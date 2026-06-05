@@ -36,17 +36,22 @@ function wrap(Component: ComponentType) {
   );
 }
 
+const AShare = lazy(() =>
+  import("@/pages/ashare/ASharePage").then((m) => ({ default: m.ASharePage })),
+);
+
 export const router = createBrowserRouter([
   {
     element: <Layout />,
     children: [
       { path: "/", element: wrap(Home) },
       { path: "/agent", element: wrap(Agent) },
+      { path: "/alpha-zoo", element: wrap(AlphaZoo) },
       { path: "/settings", element: wrap(Settings) },
+      { path: "/correlation", element: wrap(Correlation) },
+      { path: "/ashare", element: wrap(AShare) },
       { path: "/runs/:runId", element: wrap(RunDetail) },
       { path: "/compare", element: wrap(Compare) },
-      { path: "/correlation", element: wrap(Correlation) },
-      { path: "/alpha-zoo", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/bench", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/compare", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/:alphaId", element: wrap(AlphaZoo) },

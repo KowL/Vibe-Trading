@@ -192,10 +192,22 @@ export const api = {
       body: JSON.stringify({ broker }),
     }),
   stopLiveRunner: (broker: string) =>
-    request<LiveRunnerResponse>("/live/runner/stop", {
+    request<LiveRunnerResponse>(`/live/runner/stop`, {
       method: "POST",
       body: JSON.stringify({ broker }),
     }),
+
+  // A-share API (ported from Ruo.ai)
+  listLimitUp: (tradeDate: string) => request<LimitUpRecord[]>(`/ashare/limit-up/${tradeDate}`),
+  syncLimitUp: (tradeDate?: string) => request<LimitUpSyncResult>(`/ashare/limit-up/sync${tradeDate ? `?trade_date=${tradeDate}` : ""}`, { method: "POST" }),
+  listPortfolios: () => request<Portfolio[]>("/ashare/portfolios"),
+  createPortfolio: (body: { name: string; initial_cash: number }) => request<Portfolio>("/ashare/portfolios", { method: "POST", body: JSON.stringify(body) }),
+  getPortfolio: (id: string) => request<Portfolio>(`/ashare/portfolios/${id}`),
+  listTrades: (portfolioId: string) => request<Trade[]>(`/ashare/portfolios/${portfolioId}/trades`),
+  recordTrade: (portfolioId: string, body: { symbol: string; side: string; quantity: number; price: number; fee?: number }) =>
+    request<Trade>(`/ashare/portfolios/${portfolioId}/trades`, { method: "POST", body: JSON.stringify(body) }),
+  generateReport: (kind: string, tradeDate?: string) => request<Report>(`/ashare/reports/${kind}${tradeDate ? `?trade_date=${tradeDate}` : ""}`, { method: "POST" }),
+  getReport: (kind: string, tradeDate: string) => request<{ markdown: string }>(`/ashare/reports/${kind}/${tradeDate}`),
 };
 
 // --- Swarm types ---
@@ -906,4 +918,60 @@ export interface MessageItem {
   created_at: string;
   linked_attempt_id?: string;
   metadata?: Record<string, unknown>;
+}
+
+// --- A-share types (ported from Ruo.ai) ---
+
+export interface LimitUpRecord {
+  trade_date: string;
+  symbol: string;
+  name: string;
+  limit_up_count: number;
+  limit_up_price: number;
+  close_price: number;
+  change_pct: number;
+  seal_amount: number;
+  seal_ratio: number;
+  first_time: string | null;
+  industry: string;
+  concept: string;
+  is_sealed: boolean;
+}
+
+export interface LimitUpSyncResult {
+  trade_date: string;
+  count: number;
+  source: string;
+  errors: string[];
+}
+
+export interface Portfolio {
+  portfolio_id: string;
+  name: string;
+  initial_cash: number;
+  cash: number;
+  market_value: number;
+  total_value: number;
+  total_pnl: number;
+  total_return_pct: number;
+}
+
+export interface Trade {
+  trade_id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  price: number;
+  amount: number;
+  status: string;
+  pnl: number;
+}
+
+export interface Report {
+  kind: string;
+  trade_date: string;
+  title: string;
+  markdown: string;
+  metrics: Record<string, unknown>;
+  created_at: string;
 }
