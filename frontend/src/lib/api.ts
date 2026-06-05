@@ -930,11 +930,11 @@ export interface LimitUpRecord {
   limit_up_price: number;
   close_price: number;
   change_pct: number;
-  seal_amount: number;
-  seal_ratio: number;
+  seal_amount: number | null;
+  seal_ratio: number | null;
   first_time: string | null;
-  industry: string;
-  concept: string;
+  industry: string | null;
+  concept: string | null;
   is_sealed: boolean;
 }
 

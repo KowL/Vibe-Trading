@@ -129,7 +129,7 @@ function LimitUpTab() {
                     <td className="py-2 px-2 text-right font-bold">{r.limit_up_count}</td>
                     <td className="py-2 px-2 text-right">{r.limit_up_price.toFixed(2)}</td>
                     <td className="py-2 px-2 text-right">{(r.change_pct * 100).toFixed(2)}%</td>
-                    <td className="py-2 px-2 text-right">{(r.seal_amount / 1e4).toFixed(0)}万</td>
+                    <td className="py-2 px-2 text-right">{(r.seal_amount ? (r.seal_amount / 1e4).toFixed(0) : "—")}万</td>
                     <td className="py-2 px-2 text-xs text-muted-foreground max-w-[200px] truncate">{r.concept}</td>
                     <td className="py-2 px-2 text-center">
                       {r.is_sealed ? (

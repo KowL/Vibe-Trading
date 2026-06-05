@@ -59,14 +59,14 @@ class LimitUpDaily:
     turnover_amount: float = 0.0
     turnover_volume: float = 0.0
     turnover_ratio: float = 0.0
-    seal_amount: float = 0.0
-    seal_ratio: float = 0.0
-    first_time: Optional[time] = None
-    last_time: Optional[time] = None
-    open_count: int = 0
-    industry: str = ""
-    concept: str = ""
-    reason: str = ""
+    seal_amount: float | None = None
+    seal_ratio: float | None = None
+    first_time: time | None = None
+    last_time: time | None = None
+    open_count: int | None = None
+    industry: str | None = None
+    concept: str | None = None
+    reason: str | None = None
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     source: str = "amazingdata"
 
@@ -101,4 +101,4 @@ class LimitUpDaily:
     @property
     def is_opened(self) -> bool:
         """True when the board was broken at least once."""
-        return self.open_count > 0
+        return (self.open_count or 0) > 0

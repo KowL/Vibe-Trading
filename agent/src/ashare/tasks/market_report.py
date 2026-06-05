@@ -95,23 +95,20 @@ def _report_path(kind: ReportKind, trade_date: date) -> Path:
 
 
 def _fetch_index_quote(symbol: str) -> dict[str, float]:
-    """Fetch a single index quote from AmazingData."""
+    """Fetch a single index quote from AmazingData /stock/quote/{code}."""
     try:
         r = httpx.get(
-            f"{_AMAZINGDATA_BASE}/stock/quote",
-            params={"symbol": symbol},
+            f"{_AMAZINGDATA_BASE}/stock/quote/{symbol}",
             timeout=10.0,
         )
         r.raise_for_status()
         payload = r.json()
         data = payload.get("data", payload) if isinstance(payload, dict) else payload
-        if isinstance(data, list) and data:
-            data = data[0]
         if not isinstance(data, dict):
-            data = {}
+            return {}
         return {
-            "price": float(data.get("price", 0) or data.get("close", 0)),
-            "change_pct": float(data.get("change_pct", 0)),
+            "price": float(data.get("last", 0) or data.get("close", 0)),
+            "change_pct": float(data.get("changePct", 0)),
             "open": float(data.get("open", 0)),
             "high": float(data.get("high", 0)),
             "low": float(data.get("low", 0)),
@@ -140,16 +137,16 @@ def _collect_metrics(trade_date: date, store: LimitUpStore) -> MarketMetrics:
                 continue
             entry = concepts.setdefault(c, {"name": c, "count": 0, "seal_amount": 0.0})
             entry["count"] += 1
-            entry["seal_amount"] += r.seal_amount
+            entry["seal_amount"] += r.seal_amount or 0
 
-    hot_concepts = sorted(concepts.values(), key=lambda x: (x["count"], x["seal_amount"]), reverse=True)[:10]
+    hot_concepts = sorted(concepts.values(), key=lambda x: (x["count"], x["seal_amount"] or 0), reverse=True)[:10]
 
     return MarketMetrics(
         trade_date=trade_date,
         limit_up_count=len(sealed),
         limit_up_opened_count=len(opened),
         max_limit_up_count=max_count,
-        total_seal_amount=sum(r.seal_amount for r in sealed),
+        total_seal_amount=sum((r.seal_amount or 0) for r in sealed),
         leading_symbol=leader.symbol,
         leading_name=leader.name,
         index_quote=_fetch_index_quote("000001.SH"),

@@ -66,13 +66,14 @@ def _parse_time(value: Any) -> time | None:
 
 
 def _amazingdata_limit_up(trade_date: date) -> list[LimitUpDaily]:
-    """Fetch limit-up board from AmazingData /stock/limit-up."""
-    url = f"{_AMAZINGDATA_BASE}/stock/limit-up"
+    """Fetch limit-up board from AmazingData /market/limit-up."""
+    url = f"{_AMAZINGDATA_BASE}/market/limit-up"
     params = {"date": trade_date.isoformat()}
     r = httpx.get(url, params=params, timeout=30.0)
     r.raise_for_status()
     payload = r.json()
-    rows = payload.get("data", []) if isinstance(payload, dict) else payload
+    # AmazingData returns {"days": int, "total": int, "scanned": int, "stocks": [...]}
+    rows = payload.get("stocks", []) if isinstance(payload, dict) else payload
     records: list[LimitUpDaily] = []
     for row in rows:
         symbol = _normalize_symbol(row.get("code") or row.get("symbol", ""))
@@ -82,25 +83,25 @@ def _amazingdata_limit_up(trade_date: date) -> list[LimitUpDaily]:
             trade_date=trade_date,
             symbol=symbol,
             name=row.get("name", ""),
-            limit_up_count=int(row.get("limit_up_count") or row.get("limit_up_times") or 1),
-            limit_up_price=_float(row.get("limit_up_price")),
+            limit_up_count=int(row.get("limitUpDays") or 1),
+            limit_up_price=_float(row.get("price")),
             open_price=_float(row.get("open")),
-            close_price=_float(row.get("close")),
+            close_price=_float(row.get("price")),
             high_price=_float(row.get("high")),
             low_price=_float(row.get("low")),
-            prev_close=_float(row.get("pre_close")),
-            change_pct=_float(row.get("change_pct")),
-            turnover_amount=_float(row.get("turnover_amount")),
-            turnover_volume=_float(row.get("turnover_volume")),
-            turnover_ratio=_float(row.get("turnover_ratio")),
-            seal_amount=_float(row.get("seal_amount")),
-            seal_ratio=_float(row.get("seal_ratio")),
-            first_time=_parse_time(row.get("first_time")),
-            last_time=_parse_time(row.get("last_time")),
-            open_count=int(row.get("open_count") or 0),
-            industry=row.get("industry", ""),
-            concept=row.get("concept", ""),
-            reason=row.get("reason", ""),
+            prev_close=_float(row.get("preClose")),
+            change_pct=_float(row.get("changePct")),
+            turnover_amount=_float(row.get("amount")),
+            turnover_volume=_float(row.get("volume")),
+            turnover_ratio=_float(row.get("turnover")),
+            seal_amount=None,  # AmazingData does not provide seal amount
+            seal_ratio=None,
+            first_time=_parse_time(row.get("firstTime")),
+            last_time=_parse_time(row.get("finalTime")),
+            open_count=None,
+            industry=row.get("industry") or None,
+            concept=row.get("concept") or None,
+            reason=row.get("reason") or None,
             source="amazingdata",
         )
         records.append(rec)

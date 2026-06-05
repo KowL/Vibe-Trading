@@ -49,11 +49,11 @@ class LimitUpRecordOut(BaseModel):
     limit_up_price: float
     close_price: float
     change_pct: float
-    seal_amount: float
-    seal_ratio: float
+    seal_amount: float | None
+    seal_ratio: float | None
     first_time: str | None
-    industry: str
-    concept: str
+    industry: str | None
+    concept: str | None
     is_sealed: bool
 
 
