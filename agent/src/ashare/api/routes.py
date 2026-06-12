@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -51,13 +50,23 @@ class LimitUpRecordOut(BaseModel):
     name: str
     limit_up_count: int
     limit_up_price: float
+    open_price: float = 0.0
     close_price: float
+    high_price: float = 0.0
+    low_price: float = 0.0
+    prev_close: float = 0.0
     change_pct: float
+    turnover_amount: float = 0.0
+    turnover_volume: float = 0.0
+    turnover_ratio: float = 0.0
     seal_amount: float | None
     seal_ratio: float | None
     first_time: str | None
+    last_time: str | None = None
+    open_count: int | None = None
     industry: str | None
     concept: str | None
+    reason: str | None = None
     is_sealed: bool
 
 
@@ -127,13 +136,23 @@ def list_limit_up(trade_date: date) -> list[LimitUpRecordOut]:
             name=r.name,
             limit_up_count=r.limit_up_count,
             limit_up_price=r.limit_up_price,
+            open_price=r.open_price,
             close_price=r.close_price,
+            high_price=r.high_price,
+            low_price=r.low_price,
+            prev_close=r.prev_close,
             change_pct=r.change_pct,
+            turnover_amount=r.turnover_amount,
+            turnover_volume=r.turnover_volume,
+            turnover_ratio=r.turnover_ratio,
             seal_amount=r.seal_amount,
             seal_ratio=r.seal_ratio,
             first_time=r.first_time.isoformat() if r.first_time else None,
+            last_time=r.last_time.isoformat() if r.last_time else None,
+            open_count=r.open_count,
             industry=r.industry,
             concept=r.concept,
+            reason=r.reason,
             is_sealed=r.is_sealed,
         )
         for r in records.values()
@@ -289,12 +308,21 @@ async def generate_report(kind: ReportKind, trade_date: date | None = Query(defa
     )
 
 
-@router.get("/reports/{kind}/{trade_date}")
-def get_report(kind: ReportKind, trade_date: date) -> dict[str, str]:
-    path = Path.home() / ".vibe-trading" / "ashare" / "reports" / f"{kind.value}_{trade_date.isoformat()}.md"
-    if not path.exists():
+@router.get("/reports/{kind}/{trade_date}", response_model=ReportOut)
+def get_report(kind: ReportKind, trade_date: date) -> ReportOut:
+    from src.ashare.tasks.market_report import _load_report_from_disk
+
+    report = _load_report_from_disk(kind, trade_date)
+    if report is None:
         raise HTTPException(status_code=404, detail="Report not found")
-    return {"kind": kind.value, "trade_date": trade_date.isoformat(), "markdown": path.read_text(encoding="utf-8")}
+    return ReportOut(
+        kind=report.kind.value,
+        trade_date=report.trade_date.isoformat(),
+        title=report.title,
+        markdown=report.markdown,
+        metrics=report.metrics,
+        created_at=report.created_at,
+    )
 
 
 # --------------------------------------------------------------------------- #
