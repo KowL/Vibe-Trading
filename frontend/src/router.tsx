@@ -53,7 +53,7 @@ const DecisionTree = lazy(() =>
   import("@/pages/DecisionTree").then((m) => ({ default: m.DecisionTree })),
 );
 const Strategy = lazy(() =>
-  import("@/pages/ashare/StrategyPage").then((m) => ({ default: m.StrategyPage })),
+  import("@/pages/ashare/StrategyPage").then((m) => ({ default: m.default })),
 );
 
 export const router = createBrowserRouter([

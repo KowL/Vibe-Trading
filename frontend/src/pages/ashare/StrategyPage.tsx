@@ -344,5 +344,3 @@ export default function StrategyPage() {
     </div>
   );
 }
-
-export default StrategyPage;
