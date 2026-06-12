@@ -18,8 +18,12 @@ Usage:
     print(result.summary())
 """
 
+from src.ashare.strategies.adaptive_risk import BandParams
 from src.ashare.strategies.backtest import MultiFactorBacktest
+from src.ashare.strategies.fast_backtest import FastMultiFactorBacktest
+from src.ashare.strategies.local_loader import LocalKlineLoader
 from src.ashare.strategies.multi_factor import MultiFactorSelector, StockScore
+from src.ashare.strategies.stock_profile import StockProfile
 from src.ashare.strategies.trend_timing import TrendTiming, TradeSignal, Signal, Position
 
 __all__ = [
@@ -30,4 +34,8 @@ __all__ = [
     "Signal",
     "Position",
     "MultiFactorBacktest",
+    "FastMultiFactorBacktest",
+    "LocalKlineLoader",
+    "StockProfile",
+    "BandParams",
 ]
