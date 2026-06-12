@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { API_BASE } from "../../lib/api";
+const API_BASE = "";
 
 interface BacktestResult {
   start_date: string;
