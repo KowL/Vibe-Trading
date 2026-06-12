@@ -86,7 +86,7 @@ vibe-trading ashare report --kind close --generate
 
 ## 数据源
 
-- **AmazingData** (localhost:3100)
+- **adshare** (localhost:8000)
 - 端点: `/market/limit-up`
 - 字段映射: `limitUpDays` → `limit_up_count`, `price` → `limit_up_price`
 
@@ -94,7 +94,7 @@ vibe-trading ashare report --kind close --generate
 
 环境变量 (`.env`):
 ```
-AMAZINGDATA_BASE_URL=http://localhost:3100
+ADSHARE_URL=http://localhost:8000
 ```
 
 ## 定时任务
@@ -121,4 +121,4 @@ pytest agent/tests/ashare/test_models.py -v
 1. **实盘交易**: 当前仅支持模拟交易（broker=simulated）
 2. **Mandate 授权**: 所有实盘交易必须通过授权书检查
 3. **ST 排除**: 默认排除 ST/*ST 股票
-4. **数据延迟**: AmazingData 数据可能有 15 分钟延迟
+4. **数据延迟**: adshare 数据可能有 15 分钟延迟

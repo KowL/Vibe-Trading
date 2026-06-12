@@ -152,7 +152,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     # limit-up
     lu_parser = ashare_subparsers.add_parser("limit-up", help="Show limit-up records")
     lu_parser.add_argument("--date", type=str, help="Trade date (YYYY-MM-DD)")
-    lu_parser.add_argument("--sync", action="store_true", help="Sync data from AmazingData first")
+    lu_parser.add_argument("--sync", action="store_true", help="Sync data from adshare first")
     lu_parser.add_argument("--json", action="store_true", help="Output JSON")
 
     # portfolio

@@ -1,8 +1,9 @@
 """A-share limit-up data sync task.
 
 Ports Ruo.ai's 15:30 涨停同步任务 to Vibe-Trading's asyncio scheduler.
-Fetches the day's limit-up board from AmazingData (fallback tushare/akshare),
-parses into LimitUpDaily records, and persists to ~/.vibe-trading/ashare/limit_up/.
+Fetches the day's limit-up board from akshare (primary, free / East Money),
+with adshare/tushare fallbacks, parses into LimitUpDaily records, and
+persists to ~/.vibe-trading/ashare/limit_up/.
 """
 
 from __future__ import annotations
@@ -18,10 +19,11 @@ import httpx
 
 from src.ashare.models.limit_up import LimitUpDaily
 from src.ashare.storage.limit_up_store import LimitUpStore
+from src.ashare.adshare_client import AdshareClient
 
 logger = logging.getLogger(__name__)
 
-_AMAZINGDATA_BASE = "http://127.0.0.1:3100"
+_ADSHARE_BASE = "http://localhost:8000"
 
 
 @dataclass
@@ -42,7 +44,7 @@ def _today_shanghai() -> date:
 
 
 def _normalize_symbol(raw: str) -> str:
-    """Normalize AmazingData symbol to Vibe-Trading style (e.g. 000001.SZ)."""
+    """Normalize symbol to Vibe-Trading style (e.g. 000001.SZ)."""
     raw = str(raw).strip().upper()
     if "." in raw:
         return raw
@@ -53,59 +55,65 @@ def _normalize_symbol(raw: str) -> str:
 
 
 def _parse_time(value: Any) -> time | None:
-    """Parse '09:30:00' or '09:30' into a time object."""
+    """Parse '09:30:00' / '09:30' / '093000' (HHMMSS) into a time object."""
     if value is None or value == "":
         return None
     s = str(value).strip()
-    if len(s) >= 6:
+    # AkShare 东方财富 returns HHMMSS without colons, e.g. '092500'
+    if len(s) == 6 and s.isdigit():
         try:
-            return time.fromisoformat(s)
+            return time(int(s[:2]), int(s[2:4]), int(s[4:6]))
+        except ValueError:
+            return None
+    # ISO-style '09:30:00' or '09:30'
+    if len(s) >= 5:
+        try:
+            return time.fromisoformat(s[:8])
         except ValueError:
             pass
     return None
 
 
-def _amazingdata_limit_up(trade_date: date) -> list[LimitUpDaily]:
-    """Fetch limit-up board from AmazingData /market/limit-up."""
-    url = f"{_AMAZINGDATA_BASE}/market/limit-up"
-    params = {"date": trade_date.isoformat()}
-    r = httpx.get(url, params=params, timeout=30.0)
-    r.raise_for_status()
-    payload = r.json()
-    # AmazingData returns {"days": int, "total": int, "scanned": int, "stocks": [...]}
-    rows = payload.get("stocks", []) if isinstance(payload, dict) else payload
-    records: list[LimitUpDaily] = []
-    for row in rows:
-        symbol = _normalize_symbol(row.get("code") or row.get("symbol", ""))
-        if not symbol or symbol == ".SH" or symbol == ".SZ":
-            continue
-        rec = LimitUpDaily(
-            trade_date=trade_date,
-            symbol=symbol,
-            name=row.get("name", ""),
-            limit_up_count=int(row.get("limitUpDays") or 1),
-            limit_up_price=_float(row.get("price")),
-            open_price=_float(row.get("open")),
-            close_price=_float(row.get("price")),
-            high_price=_float(row.get("high")),
-            low_price=_float(row.get("low")),
-            prev_close=_float(row.get("preClose")),
-            change_pct=_float(row.get("changePct")),
-            turnover_amount=_float(row.get("amount")),
-            turnover_volume=_float(row.get("volume")),
-            turnover_ratio=_float(row.get("turnover")),
-            seal_amount=None,  # AmazingData does not provide seal amount
-            seal_ratio=None,
-            first_time=_parse_time(row.get("firstTime")),
-            last_time=_parse_time(row.get("finalTime")),
-            open_count=None,
-            industry=row.get("industry") or None,
-            concept=row.get("concept") or None,
-            reason=row.get("reason") or None,
-            source="amazingdata",
-        )
-        records.append(rec)
-    return records
+def _adshare_limit_up(trade_date: date) -> list[LimitUpDaily]:
+    """Fetch limit-up board from adshare /market/limit-up."""
+    client = AdshareClient()
+    try:
+        payload = client.get_limit_up(trade_date=trade_date, days=1, board_filter="all", exclude_st=True)
+        rows = payload.get("stocks", []) if isinstance(payload, dict) else []
+        records: list[LimitUpDaily] = []
+        for row in rows:
+            symbol = _normalize_symbol(row.get("code") or row.get("symbol", ""))
+            if not symbol or symbol == ".SH" or symbol == ".SZ":
+                continue
+            rec = LimitUpDaily(
+                trade_date=trade_date,
+                symbol=symbol,
+                name=row.get("name", ""),
+                limit_up_count=int(row.get("limitUpDays") or row.get("limit_up_count") or 1),
+                limit_up_price=_float(row.get("price") or row.get("limit_up_price")),
+                open_price=_float(row.get("open") or row.get("open_price")),
+                close_price=_float(row.get("price") or row.get("close_price")),
+                high_price=_float(row.get("high") or row.get("high_price")),
+                low_price=_float(row.get("low") or row.get("low_price")),
+                prev_close=_float(row.get("preClose") or row.get("prev_close")),
+                change_pct=_float(row.get("changePct") or row.get("change_pct")),
+                turnover_amount=_float(row.get("amount") or row.get("turnover_amount")),
+                turnover_volume=_float(row.get("volume") or row.get("turnover_volume")),
+                turnover_ratio=_float(row.get("turnover") or row.get("turnover_ratio")),
+                seal_amount=_float(row.get("sealAmount") or row.get("seal_amount")),
+                seal_ratio=_float(row.get("sealRatio") or row.get("seal_ratio")),
+                first_time=_parse_time(row.get("firstTime") or row.get("first_time")),
+                last_time=_parse_time(row.get("finalTime") or row.get("last_time")),
+                open_count=int(row.get("openCount") or row.get("open_count") or 0) if (row.get("openCount") or row.get("open_count")) else None,
+                industry=row.get("industry") or None,
+                concept=row.get("concept") or None,
+                reason=row.get("reason") or None,
+                source="adshare",
+            )
+            records.append(rec)
+        return records
+    finally:
+        client.close()
 
 
 def _float(value: Any) -> float:
@@ -152,34 +160,96 @@ def _fallback_tushare(trade_date: date) -> list[LimitUpDaily]:
     return records
 
 
-def _fallback_akshare(trade_date: date) -> list[LimitUpDaily]:
-    """Placeholder: akshare fallback."""
+def _akshare_limit_up(trade_date: date) -> list[LimitUpDaily]:
+    """Fetch limit-up board from AkShare (东方财富).
+
+    Combines the sealed pool (stock_zt_pool_em) and the broken-board pool
+    (stock_zt_pool_zbgc_em) so 炸板 records also flow through. AkShare is
+    free and unauthenticated; columns are Chinese.
+
+    Field coverage:
+        sealed 池: 连板数, 封板资金, 首次/最后封板时间, 炸板次数
+        broken 池: 涨停价, 首次封板时间, 炸板次数
+    Merging the two gives near-complete data for the UI.
+    """
     try:
         import akshare as ak
     except ImportError:
         return []
-    try:
-        df = ak.stock_zt_pool_em(date=trade_date.strftime("%Y%m%d"))
-    except Exception:
-        return []
+
+    date_str = trade_date.strftime("%Y%m%d")
     records: list[LimitUpDaily] = []
-    for _, row in df.iterrows():
-        symbol = _normalize_symbol(row.get("代码", ""))
-        if not symbol:
+    seen: set[str] = set()
+
+    pools: list[tuple[object, bool]] = []
+    try:
+        pools.append((ak.stock_zt_pool_em(date=date_str), True))
+    except Exception as exc:
+        logger.warning("akshare sealed pool failed: %s", exc)
+    try:
+        pools.append((ak.stock_zt_pool_zbgc_em(date=date_str), False))
+    except Exception as exc:
+        logger.warning("akshare broken pool failed: %s", exc)
+
+    for df, sealed in pools:
+        if df is None or len(df) == 0:
             continue
-        records.append(
-            LimitUpDaily(
-                trade_date=trade_date,
-                symbol=symbol,
-                name=row.get("名称", ""),
-                limit_up_count=int(row.get("连板数", 1)),
-                close_price=_float(row.get("最新价")),
-                limit_up_price=_float(row.get("涨停价")),
-                turnover_amount=_float(row.get("成交额")) * 10000,
-                turnover_ratio=_float(row.get("换手率")),
-                source="akshare",
+        for _, row in df.iterrows():
+            symbol = _normalize_symbol(row.get("代码", ""))
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+
+            change_pct_raw = _float(row.get("涨跌幅"))          # 百分比数值
+            turnover_ratio_raw = _float(row.get("换手率"))      # 百分比数值
+            close_price = _float(row.get("最新价"))
+            # AkShare 东方财富：成交额 / 封板资金 均为元（不是万元）
+            turnover_amount = _float(row.get("成交额")) or 0.0
+            seal_amount_raw = _float(row.get("封板资金"))
+            seal_amount = seal_amount_raw if seal_amount_raw > 0 else None
+            limit_up_price = _float(row.get("涨停价")) or 0.0   # 炸板池才有
+            first_time = _parse_time(row.get("首次封板时间"))
+            last_time = _parse_time(row.get("最后封板时间"))
+            open_count = int(_float(row.get("炸板次数")) or 0) or None
+
+            # 涨停价 fallback：封板池无此字段，用 close 顶替（is_sealed=True 自然成立）
+            if not limit_up_price:
+                limit_up_price = close_price
+
+            # 连板数：封板池直接有 "连板数"；炸板池无此字段，从 "涨停统计" 解析
+            limit_count_raw = row.get("连板数")
+            if limit_count_raw is not None and str(limit_count_raw).strip() != "":
+                limit_up_count = int(_float(limit_count_raw) or 1)
+            else:
+                stat = str(row.get("涨停统计", ""))
+                # 形如 "3天3板"、"首板" 等。优先取 "N板" 中的 N；否则取最后一个数字
+                import re
+                m = re.search(r"(\d+)\s*板", stat)
+                if m:
+                    limit_up_count = int(m.group(1))
+                else:
+                    nums = re.findall(r"\d+", stat)
+                    limit_up_count = int(nums[-1]) if nums else 1
+
+            records.append(
+                LimitUpDaily(
+                    trade_date=trade_date,
+                    symbol=symbol,
+                    name=row.get("名称", ""),
+                    limit_up_count=limit_up_count,
+                    limit_up_price=limit_up_price,
+                    close_price=close_price,
+                    change_pct=change_pct_raw / 100 if change_pct_raw else 0.0,
+                    turnover_amount=turnover_amount,
+                    turnover_ratio=turnover_ratio_raw / 100 if turnover_ratio_raw else 0.0,
+                    seal_amount=seal_amount,
+                    first_time=first_time,
+                    last_time=last_time,
+                    open_count=open_count,
+                    industry=row.get("所属行业") or None,
+                    source="akshare",
+                )
             )
-        )
     return records
 
 
@@ -218,18 +288,19 @@ class LimitUpSyncTask:
             trade_date = _today_shanghai()
 
         errors: list[str] = []
-        sources = ["amazingdata", "tushare", "akshare"]
+        # 优先级：akshare (免费/东方财富) → adshare → tushare
+        sources = ["akshare", "adshare", "tushare"]
         records: list[LimitUpDaily] = []
-        source = "amazingdata"
+        source = "akshare"
 
         for src in sources:
             try:
-                if src == "amazingdata":
-                    records = _amazingdata_limit_up(trade_date)
+                if src == "akshare":
+                    records = _akshare_limit_up(trade_date)
+                elif src == "adshare":
+                    records = _adshare_limit_up(trade_date)
                 elif src == "tushare":
                     records = _fallback_tushare(trade_date)
-                elif src == "akshare":
-                    records = _fallback_akshare(trade_date)
                 if records:
                     source = src
                     break

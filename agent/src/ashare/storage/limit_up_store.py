@@ -1,8 +1,11 @@
 """Persistence for LimitUpDaily records.
 
 Layout:
-    ~/.vibe-trading/ashare/limit_up/<YYYY>/<YYYYMMDD>.jsonl
+    <root>/<YYYY>/<YYYYMMDD>.jsonl
 One line per symbol, keyed by symbol for idempotent writes.
+
+`<root>` defaults to ``~/.vibe-trading/ashare/limit_up`` but can be
+overridden (e.g. in tests) via the ``LimitUpStore(root=...)`` constructor.
 """
 
 from __future__ import annotations
@@ -20,22 +23,36 @@ logger = logging.getLogger(__name__)
 _LIMIT_UP_SUBDIR = "ashare/limit_up"
 
 
-def _limit_up_root() -> Path:
+def default_limit_up_root() -> Path:
+    """Resolve the default on-disk root, creating it if missing."""
     root = Path.home() / ".vibe-trading" / _LIMIT_UP_SUBDIR
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def _day_path(trade_date: date) -> Path:
-    root = _limit_up_root()
+def default_day_path(trade_date: date) -> Path:
+    """Default day-file path under ``~/.vibe-trading/ashare/limit_up``.
+
+    New code should use ``LimitUpStore(root=...)`` so the path is
+    honored through the instance.
+    """
+    root = default_limit_up_root()
     return root / str(trade_date.year) / f"{trade_date.strftime('%Y%m%d')}.jsonl"
+
+
+# Backward-compat alias for the old private module-level helper.
+_day_path = default_day_path
 
 
 class LimitUpStore:
     """Crash-safe JSONL store for daily limit-up data."""
 
     def __init__(self, root: Path | None = None) -> None:
-        self.root = root if root is not None else _limit_up_root()
+        self.root = root if root is not None else default_limit_up_root()
+
+    def _day_path(self, trade_date: date) -> Path:
+        """Resolve the day-file path under this store's root."""
+        return self.root / str(trade_date.year) / f"{trade_date.strftime('%Y%m%d')}.jsonl"
 
     def save(self, records: Iterable[LimitUpDaily]) -> Path:
         """Persist records grouped by trade_date, overwriting existing days."""
@@ -45,7 +62,7 @@ class LimitUpStore:
 
         written: Path | None = None
         for day, symbol_map in by_day.items():
-            path = _day_path(day)
+            path = self._day_path(day)
             path.parent.mkdir(parents=True, exist_ok=True)
             lines = [rec.to_dict() for rec in symbol_map.values()]
             path.write_text(
@@ -61,7 +78,7 @@ class LimitUpStore:
 
     def load_day(self, trade_date: date) -> dict[str, LimitUpDaily]:
         """Load all records for a single trading day keyed by symbol."""
-        path = _day_path(trade_date)
+        path = self._day_path(trade_date)
         if not path.exists():
             return {}
         result: dict[str, LimitUpDaily] = {}
