@@ -19,6 +19,7 @@ Usage:
 """
 
 from src.ashare.strategies.adaptive_risk import BandParams
+from src.ashare.strategies.adaptive_backtest import AdaptiveBacktest
 from src.ashare.strategies.backtest import MultiFactorBacktest
 from src.ashare.strategies.fast_backtest import FastMultiFactorBacktest
 from src.ashare.strategies.local_loader import LocalKlineLoader
@@ -35,6 +36,7 @@ __all__ = [
     "Position",
     "MultiFactorBacktest",
     "FastMultiFactorBacktest",
+    "AdaptiveBacktest",
     "LocalKlineLoader",
     "StockProfile",
     "BandParams",

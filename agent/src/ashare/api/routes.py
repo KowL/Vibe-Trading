@@ -375,6 +375,99 @@ async def ashare_events():
 
 
 # --------------------------------------------------------------------------- #
+# Strategy routes
+# --------------------------------------------------------------------------- #
+
+class StrategyBacktestRequest(BaseModel):
+    start_date: date
+    end_date: date
+    initial_cash: float = Field(default=1_000_000, ge=100_000)
+    universe: list[str] | None = None
+
+
+@router.get("/strategy/select")
+def strategy_select(
+    trade_date: date = Query(default_factory=date.today),
+    top_n: int = Query(default=20, ge=5, le=100),
+) -> dict[str, Any]:
+    """Run multi-factor stock selection."""
+    from src.ashare.strategies import MultiFactorSelector
+    selector = MultiFactorSelector()
+    pool = selector.select(trade_date=trade_date, top_n=top_n)
+    return {
+        "trade_date": trade_date.isoformat(),
+        "selected_count": len(pool),
+        "stocks": [
+            {
+                "symbol": s.symbol,
+                "composite_score": round(s.composite_score, 3),
+                "momentum_20d": round(s.momentum_20d, 1),
+                "volume_ratio": round(s.volume_ratio, 2),
+                "ma5": round(s.ma5, 2),
+                "ma20": round(s.ma20, 2),
+                "ma60": round(s.ma60, 2),
+                "atr_14": round(s.atr_14, 4),
+            }
+            for s in pool
+        ],
+    }
+
+
+@router.post("/strategy/backtest")
+def strategy_backtest(body: StrategyBacktestRequest) -> dict[str, Any]:
+    """Run multi-factor strategy backtest."""
+    from src.ashare.strategies import FastMultiFactorBacktest
+    bt = FastMultiFactorBacktest()
+    bt.preload_data(start_date=body.start_date, end_date=body.end_date, universe=body.universe)
+    result = bt.run(
+        start_date=body.start_date,
+        end_date=body.end_date,
+        initial_cash=body.initial_cash,
+    )
+    return {
+        "start_date": body.start_date.isoformat(),
+        "end_date": body.end_date.isoformat(),
+        "initial_cash": body.initial_cash,
+        "final_value": round(result.final_value, 2),
+        "total_return_pct": round(result.total_return_pct, 2),
+        "annualized_return_pct": round(result.annualized_return_pct, 2),
+        "max_drawdown_pct": round(result.max_drawdown_pct, 2),
+        "sharpe_ratio": round(result.sharpe_ratio, 2),
+        "win_rate": round(result.win_rate, 1),
+        "profit_factor": round(result.profit_factor, 2),
+        "num_trades": result.num_trades,
+        "avg_holding_days": round(result.avg_holding_days, 1),
+    }
+
+
+@router.get("/strategy/profile")
+def strategy_profile(
+    symbol: str = Query(...),
+    lookback_days: int = Query(default=120, ge=30, le=500),
+) -> dict[str, Any]:
+    """Get stock personality profile and adaptive parameters."""
+    from src.ashare.strategies import LocalKlineLoader, StockProfile, BandParams
+    from datetime import datetime, timedelta
+
+    end = datetime.now().strftime("%Y%m%d")
+    begin = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y%m%d")
+
+    loader = LocalKlineLoader()
+    df = loader.load(symbol, begin, end)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+
+    profile = StockProfile.from_bars(df, symbol=symbol)
+    params = BandParams.from_profile(profile)
+
+    return {
+        "symbol": symbol,
+        "profile": profile.to_dict(),
+        "adaptive_params": params.to_dict(),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Backtest routes
 # --------------------------------------------------------------------------- #
 

@@ -52,6 +52,9 @@ const Report = lazy(() =>
 const DecisionTree = lazy(() =>
   import("@/pages/DecisionTree").then((m) => ({ default: m.DecisionTree })),
 );
+const Strategy = lazy(() =>
+  import("@/pages/ashare/StrategyPage").then((m) => ({ default: m.StrategyPage })),
+);
 
 export const router = createBrowserRouter([
   {
@@ -66,6 +69,7 @@ export const router = createBrowserRouter([
       { path: "/ashare/limit-up", element: wrap(LimitUp) },
       { path: "/ashare/portfolio", element: wrap(Portfolio) },
       { path: "/ashare/report", element: wrap(Report) },
+      { path: "/ashare/strategy", element: wrap(Strategy) },
       { path: "/decision-tree", element: wrap(DecisionTree) },
       { path: "/runs/:runId", element: wrap(RunDetail) },
       { path: "/compare", element: wrap(Compare) },
