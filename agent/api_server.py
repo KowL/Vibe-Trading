@@ -516,8 +516,10 @@ app.add_middleware(
 
 # A-share extension (ported from Ruo.ai)
 from src.ashare.api import router as ashare_router
+from src.decision_tree import router as decision_tree_router
 
 app.include_router(ashare_router)
+app.include_router(decision_tree_router)
 
 
 # ----------------------------------------------------------------------------
