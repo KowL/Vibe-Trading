@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, time
+from pathlib import Path
 
 import pytest
 
@@ -116,3 +117,36 @@ def test_portfolio_store_trades_append(tmp_path) -> None:
     loaded = store.load_trades("pf_test")
     assert len(loaded) == 2
     assert loaded[1].symbol == "000002.SZ"
+
+
+def test_limit_up_store_honors_custom_root(tmp_path, monkeypatch) -> None:
+    """Regression: LimitUpStore.save / load_day / get / load_range / latest_trade_date
+    must all resolve paths under self.root, not the module-level default.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "fake-home"))  # ensure default root is elsewhere
+
+    custom_root = tmp_path / "ashare" / "limit_up"
+    store = LimitUpStore(root=custom_root)
+
+    rec = LimitUpDaily(
+        trade_date=date(2025, 6, 10),
+        symbol="000001.SZ",
+        name="平安银行",
+        limit_up_count=1,
+    )
+    store.save([rec])
+
+    # File should land under the custom root, not ~/.vibe-trading/...
+    assert (custom_root / "2025" / "20250610.jsonl").exists()
+    assert not (Path.home() / ".vibe-trading" / "ashare" / "limit_up" / "2025" / "20250610.jsonl").exists()
+
+    # Round-trip through every accessor
+    loaded = store.load_day(date(2025, 6, 10))
+    assert loaded["000001.SZ"].name == "平安银行"
+
+    assert store.get(date(2025, 6, 10), "000001.SZ") is not None
+
+    ranged = store.load_range(date(2025, 6, 1), date(2025, 6, 30))
+    assert date(2025, 6, 10) in ranged
+
+    assert store.latest_trade_date() == date(2025, 6, 10)

@@ -145,11 +145,11 @@ class AShareLimitUpTool(BaseTool):
 
 
 class AShareSyncLimitUpTool(BaseTool):
-    """Sync A-share limit-up data from AmazingData."""
+    """Sync A-share limit-up data from adshare."""
 
     name = "ashare_sync_limit_up"
     description = (
-        "从AmazingData同步A股涨停数据。用于获取最新涨停信息，"
+        "从adshare同步A股涨停数据。用于获取最新涨停信息，"
         "会先调用数据源API获取原始数据，再持久化到本地存储。"
     )
     parameters = {
@@ -328,6 +328,70 @@ class AShareReportTool(BaseTool):
                     },
                     ensure_ascii=False,
                     indent=2,
+                )
+        except Exception as exc:
+            return json.dumps(
+                {"status": "error", "error": str(exc)}, ensure_ascii=False
+            )
+
+
+class AShareWanrunBandTool(BaseTool):
+    """万润科技波段策略分析工具."""
+
+    name = "ashare_wanrun_band"
+    description = (
+        "万润科技(002654.SZ)波段交易策略分析。基于趋势、均线、MACD、RSI、成交量"
+        "和K线形态生成买入/卖出/持有/观望信号，包含止损止盈建议。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["signal", "backtest"],
+                "description": "操作类型: signal=生成当前信号, backtest=回测",
+            },
+        },
+        "required": ["action"],
+    }
+    repeatable = True
+    is_readonly = True
+
+    def execute(self, action: str = "signal", **kwargs: Any) -> str:
+        try:
+            from src.ashare.strategies.wanrun_band import run_strategy, run_backtest
+
+            if action == "signal":
+                result = run_strategy()
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            elif action == "backtest":
+                # 尝试获取历史数据
+                try:
+                    import httpx
+                    r = httpx.get(
+                        "http://localhost:8000/market/kline",
+                        params={"symbol": "002654.SZ", "period": "daily", "count": 120},
+                        timeout=10.0,
+                    )
+                    data = r.json()
+                    bars = data.get("data", []) if isinstance(data, dict) else data
+                    if not bars or len(bars) < 30:
+                        return json.dumps(
+                            {"status": "error", "error": "历史数据不足，需要至少30根K线"},
+                            ensure_ascii=False,
+                        )
+                    result = run_backtest(bars)
+                    result["status"] = "success"
+                    return json.dumps(result, ensure_ascii=False, indent=2)
+                except Exception as exc:
+                    return json.dumps(
+                        {"status": "error", "error": f"回测失败: {exc}"},
+                        ensure_ascii=False,
+                    )
+            else:
+                return json.dumps(
+                    {"status": "error", "error": f"未知操作: {action}"},
+                    ensure_ascii=False,
                 )
         except Exception as exc:
             return json.dumps(
