@@ -31,7 +31,7 @@ async function errorFromResponse(res: Response): Promise<ApiError> {
   return new ApiError(detail, res.status);
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+export async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const { headers, ...rest } = options ?? {};
   const mergedHeaders: Record<string, string> = { "Content-Type": "application/json", ...authHeaders() };
   if (headers) {
@@ -207,7 +207,7 @@ export const api = {
   recordTrade: (portfolioId: string, body: { symbol: string; side: string; quantity: number; price: number; fee?: number }) =>
     request<Trade>(`/ashare/portfolios/${portfolioId}/trades`, { method: "POST", body: JSON.stringify(body) }),
   generateReport: (kind: string, tradeDate?: string) => request<Report>(`/ashare/reports/${kind}${tradeDate ? `?trade_date=${tradeDate}` : ""}`, { method: "POST" }),
-  getReport: (kind: string, tradeDate: string) => request<{ markdown: string }>(`/ashare/reports/${kind}/${tradeDate}`),
+  getReport: (kind: string, tradeDate: string) => request<Report>(`/ashare/reports/${kind}/${tradeDate}`),
 };
 
 // --- Swarm types ---
@@ -928,13 +928,23 @@ export interface LimitUpRecord {
   name: string;
   limit_up_count: number;
   limit_up_price: number;
+  open_price: number;
   close_price: number;
+  high_price: number;
+  low_price: number;
+  prev_close: number;
   change_pct: number;
+  turnover_amount: number;
+  turnover_volume: number;
+  turnover_ratio: number;
   seal_amount: number | null;
   seal_ratio: number | null;
   first_time: string | null;
+  last_time: string | null;
+  open_count: number | null;
   industry: string | null;
   concept: string | null;
+  reason: string | null;
   is_sealed: boolean;
 }
 

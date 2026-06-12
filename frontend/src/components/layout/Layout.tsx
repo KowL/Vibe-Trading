@@ -1,11 +1,12 @@
 ﻿import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router-dom";
-import { BarChart3, Bot, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, TrendingUp } from "lucide-react";
+import { BarChart3, Bot, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, TrendingUp, GitBranch, Flame, Wallet, Newspaper } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
 import { useAgentStore } from "@/stores/agent";
 import { ConnectionBanner } from "@/components/layout/ConnectionBanner";
+import { NavGroup } from "@/components/layout/NavGroup";
 
 // Bump on each release; one place keeps the footer in sync with package.json.
 const APP_VERSION = "v0.1.9";
@@ -14,9 +15,15 @@ const NAV = [
   { to: "/", icon: BarChart3, label: "Home" },
   { to: "/agent", icon: Bot, label: "Agent" },
   { to: "/alpha-zoo", icon: Layers, label: "Alpha Zoo" },
-  { to: "/ashare", icon: TrendingUp, label: "A股" },
+  { to: "/decision-tree", icon: GitBranch, label: "决策树" },
   { to: "/settings", icon: Settings, label: "Settings" },
   { to: "/correlation", icon: BarChart3, label: "Correlation Matrix" },
+];
+
+const A_SHARE_CHILDREN = [
+  { to: "/ashare/limit-up", label: "涨停梯队", icon: Flame },
+  { to: "/ashare/portfolio", label: "模拟持仓", icon: Wallet },
+  { to: "/ashare/report", label: "市场报告", icon: Newspaper },
 ];
 
 export function Layout() {
@@ -106,6 +113,17 @@ export function Layout() {
               </Link>
             );
           })}
+          <NavGroup
+            to="/ashare"
+            icon={TrendingUp}
+            label="A股"
+            pathname={pathname}
+            collapsed={collapsed}
+            storageKey="qa-ashare-menu"
+            defaultOpen={pathname.startsWith("/ashare")}
+          >
+            {A_SHARE_CHILDREN}
+          </NavGroup>
         </nav>
 
         {/* Sessions — hidden when collapsed */}
