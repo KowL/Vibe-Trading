@@ -1,7 +1,33 @@
-"""A-share strategies package."""
+"""A-share strategy framework.
 
-from __future__ import annotations
+Modules:
+- multi_factor: Multi-factor stock selection engine
+- trend_timing: Trend-following signal generator with adaptive risk
+- backtest: Event-driven backtest engine
 
-from src.ashare.strategies.wanrun_band import WanrunBandStrategy, run_backtest
+Usage:
+    from src.ashare.strategies import MultiFactorSelector, TrendTiming, MultiFactorBacktest
+    selector = MultiFactorSelector()
+    pool = selector.select(trade_date=date(2025, 6, 10), top_n=50)
 
-__all__ = ["WanrunBandStrategy", "run_backtest"]
+    timing = TrendTiming()
+    signals = timing.generate_signals(trade_date=date(2025, 6, 10), stock_pool=pool, ...)
+
+    bt = MultiFactorBacktest()
+    result = bt.run(start_date=date(2022, 1, 1), end_date=date(2024, 12, 31))
+    print(result.summary())
+"""
+
+from src.ashare.strategies.backtest import MultiFactorBacktest
+from src.ashare.strategies.multi_factor import MultiFactorSelector, StockScore
+from src.ashare.strategies.trend_timing import TrendTiming, TradeSignal, Signal, Position
+
+__all__ = [
+    "MultiFactorSelector",
+    "StockScore",
+    "TrendTiming",
+    "TradeSignal",
+    "Signal",
+    "Position",
+    "MultiFactorBacktest",
+]
