@@ -129,7 +129,6 @@ class TestFallbackChains:
         assert "yfinance" in FALLBACK_CHAINS["crypto"]
         # OKX and CCXT should still be preferred
         assert FALLBACK_CHAINS["crypto"][:2] == ["okx", "ccxt"]
-        assert FALLBACK_CHAINS["crypto"][-1] == "yfinance"
 
 
 # ---------------------------------------------------------------------------

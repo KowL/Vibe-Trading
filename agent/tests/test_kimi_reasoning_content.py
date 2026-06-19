@@ -668,6 +668,39 @@ class TestChatOpenAIWithReasoningOutboundPayload:
         assistant_msg = next(m for m in payload["messages"] if m["role"] == "assistant")
         assert assistant_msg["reasoning_content"] == ""
 
+    def test_openai_does_not_inject_empty_reasoning_content(self) -> None:
+        """Strict Kimi continuation fields must not leak into OpenAI payloads."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        instance = self._instance(model="gpt-4")
+        history = [
+            HumanMessage(content="hi"),
+            AIMessage(content="plain assistant reply"),
+        ]
+
+        payload = instance._get_request_payload(history)
+
+        assistant_msg = next(m for m in payload["messages"] if m["role"] == "assistant")
+        assert "reasoning_content" not in assistant_msg
+
+    def test_deepseek_does_not_replay_reasoning_content_outbound(self) -> None:
+        """DeepSeek reasoning traces are inbound progress, not next-turn payload."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        instance = self._instance(model="deepseek-v4-pro")
+        history = [
+            HumanMessage(content="hi"),
+            AIMessage(
+                content="",
+                additional_kwargs={"reasoning_content": "internal reasoning"},
+            ),
+        ]
+
+        payload = instance._get_request_payload(history)
+
+        assistant_msg = next(m for m in payload["messages"] if m["role"] == "assistant")
+        assert "reasoning_content" not in assistant_msg
+
     def test_user_and_system_messages_untouched(self) -> None:
         """Only assistant messages get the reasoning_content injection."""
         from langchain_core.messages import HumanMessage, SystemMessage
@@ -682,3 +715,29 @@ class TestChatOpenAIWithReasoningOutboundPayload:
 
         for m in payload["messages"]:
             assert "reasoning_content" not in m
+
+    def test_non_gemini_does_not_inject_tool_call_thought_signature(self) -> None:
+        """Gemini thought signatures must be Gemini-only payload mutations."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        instance = self._instance(model="gpt-4")
+        history = [
+            HumanMessage(content="hi"),
+            AIMessage(
+                content="",
+                additional_kwargs={
+                    "tool_call_thought_signatures": [
+                        {"id": "c1", "index": 0, "thought_signature": "sig-a"},
+                    ],
+                    "tool_calls": [
+                        {"id": "c1", "type": "function",
+                         "function": {"name": "t", "arguments": "{}"}},
+                    ],
+                },
+            ),
+        ]
+
+        payload = instance._get_request_payload(history)
+
+        assistant_msg = next(m for m in payload["messages"] if m["role"] == "assistant")
+        assert "extra_content" not in assistant_msg["tool_calls"][0]

@@ -35,9 +35,12 @@ VALID_SOURCES: set[str] = {
     "okx",
     "yfinance",
     "akshare",
+    "baostock",
+    "tencent",
     "mootdx",
     "ccxt",
     "futu",
+    "local",
     "auto",
 }
 
@@ -68,9 +71,12 @@ def _ensure_registered() -> None:
         "backtest.loaders.okx",
         "backtest.loaders.yfinance_loader",
         "backtest.loaders.akshare_loader",
+        "backtest.loaders.baostock_loader",
+        "backtest.loaders.tencent_loader",
         "backtest.loaders.mootdx_loader",
         "backtest.loaders.ccxt_loader",
         "backtest.loaders.futu",
+        "backtest.loaders.local_loader",
     ]
     import importlib
     for mod in _loader_modules:
@@ -85,14 +91,14 @@ def _ensure_registered() -> None:
 # ---------------------------------------------------------------------------
 
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "a_share":   ["tushare", "mootdx", "akshare"],
-    "us_equity": ["yfinance", "akshare"],
-    "hk_equity": ["yfinance", "futu", "akshare"],
-    "crypto":    ["okx", "ccxt", "yfinance"],
-    "futures":   ["tushare", "akshare"],
-    "fund":      ["tushare", "akshare"],
-    "macro":     ["akshare", "tushare"],
-    "forex":     ["akshare", "yfinance"],
+    "a_share":   ["tushare", "mootdx", "baostock", "tencent", "akshare", "local"],
+    "us_equity": ["yfinance", "akshare", "local"],
+    "hk_equity": ["yfinance", "futu", "akshare", "local"],
+    "crypto":    ["okx", "ccxt", "yfinance", "local"],
+    "futures":   ["tushare", "akshare", "local"],
+    "fund":      ["tushare", "akshare", "local"],
+    "macro":     ["akshare", "tushare", "local"],
+    "forex":     ["akshare", "yfinance", "local"],
 }
 
 

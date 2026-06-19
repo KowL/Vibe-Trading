@@ -19,7 +19,7 @@ from src.agent.progress import HeartbeatTimer
 from src.agent.skills import SkillsLoader
 from src.agent.tools import ToolRegistry
 from src.config.schema import AgentConfig
-from src.providers.chat import ChatLLM
+from src.providers.chat import ChatLLM, LLMResponse, ProviderStreamError
 from src.swarm.models import (
     SwarmAgentSpec,
     SwarmEvent,
@@ -49,7 +49,22 @@ def _heartbeat_interval_s() -> float:
         return 3.0
 
 
+def _stream_retry_delay_s() -> float:
+    """Resolve the delay before the single stream retry, robust to garbage.
+
+    Returns:
+        Seconds to sleep between a failed ``stream_chat`` attempt and its one
+        retry. Configurable via ``SWARM_STREAM_RETRY_DELAY_S``; a bad value
+        falls back to 1.0s instead of crashing import.
+    """
+    try:
+        return float(os.getenv("SWARM_STREAM_RETRY_DELAY_S", "1.0"))
+    except ValueError:
+        return 1.0
+
+
 _HEARTBEAT_INTERVAL_S = _heartbeat_interval_s()
+_STREAM_RETRY_DELAY_S = _stream_retry_delay_s()
 _MAX_TOKEN_ESTIMATE = 60_000
 
 
@@ -439,8 +454,6 @@ def run_worker(
         # Stream the LLM — moonshot/kimi non-streaming invoke is unreliable
         # (issue #42), and streaming also feeds dashboard live progress.
         try:
-            remaining_timeout = max(10, int(timeout - elapsed))
-
             def _on_text_chunk(delta: str) -> None:
                 _emit(event_callback, "worker_text", agent_id, task_id,
                       {"content": delta, "iteration": iteration})
@@ -462,17 +475,54 @@ def run_worker(
                     {**payload, "iteration": iteration, "phase": "llm"},
                 )
 
-            with HeartbeatTimer(
-                tool_name=f"llm:{agent_spec.model_name or 'default'}",
-                interval=_HEARTBEAT_INTERVAL_S,
-                emit=_on_llm_heartbeat,
-            ):
-                response = llm.stream_chat(
-                    messages,
-                    tools=tool_defs,
-                    timeout=remaining_timeout,
-                    on_text_chunk=_on_text_chunk,
+            def _stream_once() -> LLMResponse:
+                """Run one heartbeat-wrapped streaming LLM call.
+
+                Recomputes the remaining time budget at call time so the
+                single retry after a stream failure never reuses a stale
+                timeout.
+
+                Returns:
+                    Parsed ``LLMResponse`` from ``ChatLLM.stream_chat``.
+
+                Raises:
+                    ProviderStreamError: When provider streaming fails.
+                """
+                remaining_timeout = max(10, int(timeout - (time.monotonic() - t0)))
+                with HeartbeatTimer(
+                    tool_name=f"llm:{agent_spec.model_name or 'default'}",
+                    interval=_HEARTBEAT_INTERVAL_S,
+                    emit=_on_llm_heartbeat,
+                ):
+                    return llm.stream_chat(
+                        messages,
+                        tools=tool_defs,
+                        timeout=remaining_timeout,
+                        on_text_chunk=_on_text_chunk,
+                    )
+
+            # A transient mid-stream hiccup (connection reset) used to be
+            # absorbed by ChatLLM's silent non-streaming fallback; it now
+            # surfaces as ProviderStreamError, so retry the stream exactly
+            # once before taking the existing failure path. Deterministic
+            # 4xx errors skip the retry and fail immediately.
+            try:
+                response = _stream_once()
+            except ProviderStreamError as stream_exc:
+                if not stream_exc.retryable:
+                    raise
+                logger.warning(
+                    "Provider stream failed for agent=%s task=%s iteration=%d "
+                    "(provider=%s model=%s); retrying once: %s",
+                    agent_id,
+                    task_id,
+                    iteration,
+                    stream_exc.provider,
+                    stream_exc.model,
+                    stream_exc,
                 )
+                time.sleep(_STREAM_RETRY_DELAY_S)
+                response = _stream_once()
         except Exception as exc:
             error_msg = f"LLM call failed at iteration {iteration}: {exc}"
             logger.warning(error_msg)

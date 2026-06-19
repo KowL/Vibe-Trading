@@ -1037,6 +1037,8 @@ def get_market_data(
     - "yfinance": HK/US equities (free, e.g. AAPL.US, 700.HK)
     - "okx": cryptocurrency (free, e.g. BTC-USDT, ETH-USDT)
     - "tushare": China A-shares (requires TUSHARE_TOKEN, e.g. 000001.SZ)
+    - "baostock": China A-shares via TCP protocol, bypasses HTTP CDN blocks (e.g. 000001.SZ, 601595.SH)
+    - "tencent": China A-shares via Tencent Finance API (e.g. 000001.SZ, 601595.SH)
     - "akshare": A-shares, US, HK, futures, forex (free, e.g. 000001.SZ, AAPL.US)
     - "ccxt": crypto from 100+ exchanges (free, e.g. BTC/USDT)
     - "auto": auto-detect based on symbol format (with fallback)
@@ -1045,7 +1047,7 @@ def get_market_data(
         codes: List of symbols (e.g. ["AAPL.US", "BTC-USDT", "000001.SZ"]).
         start_date: Start date (YYYY-MM-DD).
         end_date: End date (YYYY-MM-DD).
-        source: Data source ("auto", "yfinance", "okx", "tushare", "akshare", "ccxt").
+        source: Data source ("auto", "yfinance", "okx", "tushare", "baostock", "tencent", "akshare", "ccxt").
         interval: Bar size (1m/5m/15m/30m/1H/4H/1D, default "1D").
         max_rows: Per-symbol row cap (default 250) so the response stays
             within the MCP token budget. A symbol exceeding it returns an
@@ -1139,7 +1141,10 @@ def get_swarm_status(run_id: str) -> str:
         run_id: The run ID returned by run_swarm.
     """
     store = _get_swarm_store()
-    run = store.load_run(run_id)
+    try:
+        run = store.load_run(run_id)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
     if run is None:
         return json.dumps({"status": "error", "error": f"Run {run_id} not found"}, ensure_ascii=False)
     reconciled = store.reconcile_run(run, write=True)
@@ -1163,7 +1168,10 @@ def get_run_result(run_id: str) -> str:
         run_id: The run ID returned by run_swarm.
     """
     store = _get_swarm_store()
-    run = store.load_run(run_id)
+    try:
+        run = store.load_run(run_id)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
     if run is None:
         return json.dumps({"status": "error", "error": f"Run {run_id} not found"}, ensure_ascii=False)
     reconciled = store.reconcile_run(run, write=True)
@@ -1247,7 +1255,10 @@ def retry_run(run_id: str) -> str:
     from src.swarm.runtime import SwarmRuntime
 
     store = _get_swarm_store()
-    loaded = store.load_run(run_id)
+    try:
+        loaded = store.load_run(run_id)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
     if loaded is None:
         return json.dumps({"status": "error", "error": f"Run {run_id} not found"}, ensure_ascii=False)
 

@@ -17,12 +17,13 @@ import signal
 import time
 import csv
 import uuid
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Security, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
@@ -114,6 +115,7 @@ class RunResponse(BaseModel):
     metrics: Optional[BacktestMetrics] = Field(None, description="Backtest metrics")
     artifacts: List[Artifact] = Field(default_factory=list, description="Run artifacts")
     run_card: Optional[Dict[str, Any]] = Field(None, description="Trust Layer run card payload")
+    llm_usage: Optional[Dict[str, Any]] = Field(None, description="Provider-reported AgentLoop usage summary")
 
     equity_curve: Optional[List[Dict[str, Any]]] = Field(None, description="Equity preview")
     trade_log: Optional[List[Dict[str, Any]]] = Field(None, description="Trade preview")
@@ -352,7 +354,7 @@ class CommitMandateRequest(BaseModel):
     """
 
     broker: str = Field(..., min_length=1, max_length=64)
-    proposal_id: str = Field(..., min_length=1, max_length=128)
+    proposal_id: str = Field(..., pattern=r"^mp_[0-9a-f]{32}$")
     selected_ordinal: int = Field(..., ge=1, le=10)
     adjustments: Optional[Dict[str, Any]] = None
     consent_ack: bool = Field(..., description="Explicit affirmative; must be true")
@@ -477,6 +479,16 @@ _DEFAULT_CORS_ORIGINS = [
     "http://127.0.0.1:8000",
 ]
 
+_DEFAULT_LOOPBACK_HOSTS = frozenset({
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "[::1]",
+    # Starlette/FastAPI TestClient default host; included so unit tests exercise
+    # the API without having to override Host on every request.
+    "testserver",
+})
+
 
 def _parse_cors_origins(raw: Optional[str]) -> List[str]:
     """Parse CORS origins and reject credentialed wildcard configuration.
@@ -503,6 +515,37 @@ def _parse_cors_origins(raw: Optional[str]) -> List[str]:
     return origins
 
 
+def _parse_extra_loopback_hosts(raw: Optional[str]) -> set[str]:
+    """Return additional trusted Host names for loopback API traffic."""
+    if raw is None or not raw.strip():
+        return set()
+    return {host.strip().lower().rstrip(".") for host in raw.split(",") if host.strip()}
+
+
+_EXTRA_LOOPBACK_HOSTS = _parse_extra_loopback_hosts(os.getenv("API_ALLOWED_HOSTS"))
+
+
+def _host_without_port(host: str) -> str:
+    """Normalize a Host header to a lowercase hostname without a port."""
+    value = host.strip().lower().rstrip(".")
+    if not value:
+        return ""
+    if value.startswith("["):
+        end = value.find("]")
+        if end != -1:
+            return value[: end + 1]
+        return value
+    if value.count(":") == 1:
+        return value.rsplit(":", 1)[0]
+    return value
+
+
+def _is_allowed_loopback_host(host: str) -> bool:
+    """Return whether ``host`` is allowed for loopback-trusted API requests."""
+    normalized = _host_without_port(host)
+    return normalized in _DEFAULT_LOOPBACK_HOSTS or normalized in _EXTRA_LOOPBACK_HOSTS
+
+
 # CORS: override with CORS_ORIGINS (comma-separated explicit origins)
 _CORS_ORIGINS = _parse_cors_origins(os.getenv("CORS_ORIGINS"))
 
@@ -520,6 +563,17 @@ from src.decision_tree import router as decision_tree_router
 
 app.include_router(ashare_router)
 app.include_router(decision_tree_router)
+
+
+@app.middleware("http")
+async def _reject_untrusted_loopback_host(request: Request, call_next):
+    """Block DNS-rebinding Host headers before loopback auth bypasses run."""
+    if _is_local_client(request) and not _is_allowed_loopback_host(request.headers.get("host", "")):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "Untrusted local API host"},
+        )
+    return await call_next(request)
 
 
 # ----------------------------------------------------------------------------
@@ -665,6 +719,65 @@ def _auth_credential_from_header_or_query(
     return ""
 
 
+def _is_loopback_origin(origin: str) -> bool:
+    """Return whether a browser Origin header names a loopback web UI."""
+    try:
+        parsed = urllib.parse.urlsplit(origin)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _reject_cross_site_browser_request(request: Request) -> None:
+    """Reject unsafe browser requests from non-loopback origins.
+
+    CORS protects response reads, not blind form/fetch side effects. Keep local
+    CLI/curl clients working while refusing browser-originated cross-site POSTs
+    to local control-plane actions such as shutdown.
+    """
+    sec_fetch_site = request.headers.get("sec-fetch-site", "").lower()
+    if sec_fetch_site == "cross-site":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request denied")
+
+    origin = request.headers.get("origin")
+    if origin and not _is_loopback_origin(origin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request denied")
+
+
+def _require_shutdown_authorization(
+    *,
+    request: Request,
+    cred: Optional[HTTPAuthorizationCredentials],
+) -> None:
+    """Authorize the local shutdown control-plane action.
+
+    Loopback peer IP alone is not enough for this browser-reachable, destructive
+    action. When API_AUTH_KEY is configured, require the Bearer token even for
+    loopback requests; otherwise preserve local dev-mode shutdown for direct
+    loopback clients while rejecting cross-site browser requests.
+    """
+    _reject_cross_site_browser_request(request)
+    api_key = _configured_api_key()
+    if api_key:
+        token = _auth_credential_from_header_or_query(cred, None, allow_query=False)
+        if not token or not hmac.compare_digest(token, api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return
+    if not _is_local_client(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API_AUTH_KEY is required for non-local API access",
+        )
+
+
 def _validate_api_auth(
     *,
     request: Request,
@@ -751,7 +864,12 @@ def _env_shell_tools_enabled() -> bool:
 
 def _shell_tools_enabled_for_request(request: Request) -> bool:
     """Return whether this API request may expose shell tools to the agent."""
-    return _is_local_client(request) or _env_shell_tools_enabled()
+    # Shell-capable tools execute commands on the host as the API process user.
+    # Do not infer that privilege from peer IP alone: browser DNS rebinding can
+    # make attacker-controlled pages appear as loopback clients. Operators who
+    # intentionally want API-started agents or swarm workers to receive shell
+    # tools must opt in explicitly.
+    return _env_shell_tools_enabled()
 
 
 async def require_local_or_auth(
@@ -771,6 +889,31 @@ async def require_local_or_auth(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Settings access requires API_AUTH_KEY or a local loopback client",
+        )
+
+
+async def require_settings_write_auth(
+    request: Request,
+    cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
+) -> None:
+    """Require explicit authorization before changing credential-routing settings.
+
+    Settings writes can redirect stored provider credentials to a different
+    endpoint. When an API key is configured, loopback peer IP alone is not a
+    sufficient user-intent signal because a browser can reach local APIs after
+    DNS rebinding.
+    """
+    api_key = _configured_api_key()
+    if api_key:
+        token = _auth_credential_from_header_or_query(cred, None, allow_query=False)
+        if not token or not hmac.compare_digest(token, api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return
+
+    if not _is_local_client(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Settings writes require API_AUTH_KEY or a local loopback client",
         )
 
 
@@ -1047,7 +1190,15 @@ def _load_csv_to_dict(path: Path, limit: Optional[int] = None) -> List[Dict[str,
 
 
 
-def _build_response_from_run_dir(run_dir: Path, elapsed: float, *, include_analysis: bool = False) -> RunResponse:
+def _build_response_from_run_dir(
+    run_dir: Path,
+    elapsed: float,
+    *,
+    include_analysis: bool = False,
+    chart_symbol: Optional[str] = None,
+    chart_payload: str = "full",
+    chart_symbols_out: Optional[List[str]] = None,
+) -> RunResponse:
     """Build a run response from a persisted run directory."""
     run_id = run_dir.name
 
@@ -1137,6 +1288,13 @@ def _build_response_from_run_dir(run_dir: Path, elapsed: float, *, include_analy
         except (json.JSONDecodeError, OSError):
             pass
 
+    llm_usage_path = run_dir / "llm_usage.json"
+    if llm_usage_path.exists():
+        try:
+            response.llm_usage = json.loads(llm_usage_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
     trades_path = run_dir / "artifacts" / "trades.csv"
     if trades_path.exists():
         response.artifacts_trades_csv = _load_csv_to_dict(trades_path)
@@ -1165,7 +1323,14 @@ def _build_response_from_run_dir(run_dir: Path, elapsed: float, *, include_analy
         response.trade_log = response.artifacts_trades_csv[:500]
 
     if include_analysis:
-        analysis = build_run_analysis(run_dir)
+        analysis = build_run_analysis(
+            run_dir,
+        symbols=[chart_symbol] if chart_symbol else None,
+        include_payload=chart_payload != "summary" or bool(chart_symbol),
+        include_symbol_list=chart_symbols_out is not None,
+    )
+        if chart_symbols_out is not None:
+            chart_symbols_out.extend(analysis.get("chart_symbols") or [])
         response.run_stage = analysis.get("run_stage")
         response.run_context = analysis.get("run_context")
         response.price_series = analysis.get("price_series")
@@ -1174,6 +1339,11 @@ def _build_response_from_run_dir(run_dir: Path, elapsed: float, *, include_analy
         response.run_logs = analysis.get("run_logs")
 
     return response
+
+
+def _run_response_payload(response: RunResponse) -> Dict[str, Any]:
+    """Return a JSON-ready payload for opt-in run response variants."""
+    return response.model_dump(mode="json")
 
 
 # ============================================================================
@@ -1248,9 +1418,22 @@ async def get_run_pine(run_id: str):
 
 
 @app.get("/runs/{run_id}", response_model=RunResponse, dependencies=[Depends(require_auth)])
-async def get_run_result(run_id: str):
-    """Fetch full details for a historical run by ``run_id``."""
+async def get_run_result(
+    run_id: str,
+    chart_symbol: Optional[str] = Query(None, description="Opt in to chart payloads for a single symbol"),
+    chart_payload: Optional[str] = Query(
+        None,
+        description="Optional chart payload mode. Use 'summary' to omit chart rows and trade markers.",
+    ),
+):
+    """Fetch details for a historical run by ``run_id``.
+
+    The default response stays unchanged for existing consumers. Chart-heavy
+    optimizations are opt-in via query parameters.
+    """
     _validate_path_param(run_id, "run_id")
+    if chart_payload not in (None, "summary"):
+        raise HTTPException(status_code=400, detail="invalid chart_payload")
     run_dir = RUNS_DIR / run_id
 
     if not run_dir.exists():
@@ -1259,7 +1442,21 @@ async def get_run_result(run_id: str):
             detail=f"Run {run_id} not found"
         )
 
-    response = _build_response_from_run_dir(run_dir, elapsed=0.0, include_analysis=True)
+    wants_chart_meta = bool(chart_payload or chart_symbol)
+    chart_symbols: List[str] = []
+    response = _build_response_from_run_dir(
+        run_dir,
+        elapsed=0.0,
+        include_analysis=True,
+        chart_symbol=chart_symbol,
+        chart_payload=chart_payload or "full",
+        chart_symbols_out=chart_symbols if wants_chart_meta else None,
+    )
+
+    if wants_chart_meta:
+        payload = _run_response_payload(response)
+        payload["chart_symbols"] = chart_symbols
+        return JSONResponse(payload)
 
     return response
 
@@ -1375,7 +1572,7 @@ async def get_llm_settings():
     return _build_llm_settings_response()
 
 
-@app.put("/settings/llm", response_model=LLMSettingsResponse, dependencies=[Depends(require_local_or_auth)])
+@app.put("/settings/llm", response_model=LLMSettingsResponse, dependencies=[Depends(require_settings_write_auth)])
 async def update_llm_settings(payload: UpdateLLMSettingsRequest):
     """Persist project-local LLM settings and update the running process."""
     provider_name = payload.provider.strip().lower()
@@ -1446,7 +1643,7 @@ async def get_data_source_settings():
 @app.put(
     "/settings/data-sources",
     response_model=DataSourceSettingsResponse,
-    dependencies=[Depends(require_local_or_auth)],
+    dependencies=[Depends(require_settings_write_auth)],
 )
 async def update_data_source_settings(payload: UpdateDataSourceSettingsRequest):
     """Persist project-local data source credentials and update the running process."""
@@ -1517,9 +1714,14 @@ def _terminate_current_process() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-@app.post("/system/shutdown", dependencies=[Depends(require_auth)])
-async def shutdown_local_api(background_tasks: BackgroundTasks, request: Request):
-    """Shut down the local API server when requested from loopback clients."""
+@app.post("/system/shutdown")
+async def shutdown_local_api(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
+):
+    """Shut down the local API server after explicit local authorization."""
+    _require_shutdown_authorization(request=request, cred=cred)
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Local access only")
@@ -2354,7 +2556,7 @@ def _emit_live_event(session_id: Optional[str], event_type: str, data: Dict[str,
 # ``mandate.proposal`` frame. No protected touch.
 
 _PROPOSAL_TOOL_NAME = "propose_mandate_profiles"
-_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-zA-Z]+)"')
+_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-f]{32})"')
 
 
 def _load_full_proposal(proposal_id: str) -> Optional[Dict[str, Any]]:

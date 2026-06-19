@@ -20,9 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
-
 import mcp_server
 import src.swarm.runtime as rt
 import src.swarm.store as store_mod
@@ -498,6 +497,35 @@ def test_get_swarm_status_auto_recovers_zombie(tmp_path, monkeypatch):
     assert store.load_run(run.id).status == RunStatus.failed
 
 
+def test_mcp_run_result_rejects_path_shaped_run_id_without_outside_write(tmp_path, monkeypatch):
+    """MCP result lookups must not treat run_id as a filesystem path.
+
+    HTTP swarm routes already reject traversal-shaped run ids; the MCP status
+    tools need the same invariant because reads can reconcile and write run
+    state back to disk.
+    """
+    base_dir = tmp_path / "runs"
+    outside_dir = tmp_path / "outside" / "victim"
+    base_dir.mkdir()
+    outside_dir.mkdir(parents=True)
+    traversal_id = os.path.relpath(outside_dir, base_dir)
+    store = SwarmStore(base_dir=base_dir)
+    run = _base_run(traversal_id)
+    run.status = RunStatus.running
+    run.tasks[0] = run.tasks[0].model_copy(
+        update={"status": TaskStatus.completed, "summary": "SAFE_MCP_SWARM_MARKER"}
+    )
+    (outside_dir / "run.json").write_text(run.model_dump_json(indent=2), encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_get_swarm_store", lambda: store)
+
+    payload = json.loads(mcp_server.get_run_result(traversal_id))
+
+    assert payload["status"] == "error"
+    assert "run_id" in payload["error"]
+    assert not (outside_dir / "tasks").exists()
+    assert not (outside_dir / "events.jsonl").exists()
+
+
 def test_run_swarm_emits_keepalive_every_poll(tmp_path, monkeypatch):
     """Each polling iteration must emit a progress notification, even if the
     task counts haven't changed. Earlier dedup-on-message version emitted
@@ -553,8 +581,12 @@ def test_worker_source_wires_heartbeat_around_llm_streaming():
     versions only wrapped registry.execute, leaving a real loophole where
     reconcile_run would mark a healthy run failed mid-LLM-call."""
     import inspect
+    import re
     source = inspect.getsource(worker_mod)
-    timer_idx = source.find('with HeartbeatTimer(\n                tool_name=f"llm:')
+    timer_match = re.search(
+        r'with HeartbeatTimer\(\s*\n\s*tool_name=f"llm:', source
+    )
+    timer_idx = timer_match.start() if timer_match else -1
     stream_idx = source.find("llm.stream_chat(", timer_idx)
     assert 0 < timer_idx < stream_idx, (
         "llm.stream_chat must be wrapped in a HeartbeatTimer so the stale-"
