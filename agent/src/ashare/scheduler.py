@@ -50,6 +50,7 @@ _TASK_WINDOWS: dict[str, _TimeWindow] = {
     "limit_up_sync": _TimeWindow(time(15, 30), time(16, 0)),
     "market_report_close": _TimeWindow(time(18, 0), time(18, 30)),
     "market_report_weekly": _TimeWindow(time(19, 0), time(19, 30), weekdays={4}),  # Friday
+    "strategy_market_refresh": _TimeWindow(time(16, 0), time(16, 30)),
 }
 
 
@@ -175,6 +176,11 @@ class AShareTaskRunner:
             if hasattr(result, 'trade_date') and hasattr(result, 'count'):
                 pub.publish_limit_up_sync(result.trade_date, result.count, result.source)
             return result
+        if task_id == "strategy_market_refresh":
+            from src.ashare.strategies.market_engine import get_market_engine
+            engine = get_market_engine()
+            results = await engine.refresh_all()
+            return {"refreshed": list(results.keys()), "count": len(results)}
         if task_id == "market_report_open":
             result = await self.report_task.run(ReportKind.OPEN)
             self._publish_report(result, "open")
@@ -236,6 +242,12 @@ def _build_jobs() -> list[Job]:
             next_run_at=now_ms,
             schedule="interval:60000",
             payload={"task": "market_report_weekly"},
+        ),
+        Job(
+            id="ashare_strategy_market_refresh",
+            next_run_at=now_ms,
+            schedule="interval:60000",
+            payload={"task": "strategy_market_refresh"},
         ),
     ]
 

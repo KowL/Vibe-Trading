@@ -77,6 +77,24 @@ class AShareLivePublisher:
             },
         )
 
+    def publish_strategy_market(self, snapshot: Any) -> None:
+        """Publish a strategy market snapshot update."""
+        if not self.event_bus:
+            return
+        try:
+            data = snapshot.model_dump() if hasattr(snapshot, "model_dump") else dict(snapshot)
+        except Exception:
+            data = {"strategy_id": getattr(snapshot, "strategy_id", "unknown")}
+        self.event_bus.emit(
+            session_id="ashare_broadcast",
+            event_type="ashare_strategy_market",
+            data={
+                "snapshot": data,
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+        logger.info("Published strategy market snapshot: %s", data.get("strategy_id"))
+
 
 # Global singleton (set by api_server on startup)
 _ashare_publisher: AShareLivePublisher | None = None

@@ -8,7 +8,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Any
 
@@ -50,21 +49,9 @@ def local_select(
 
     logger.info("local_select: %d stocks, %s ~ %s", len(universe), begin, end)
 
-    # Load all data in parallel
-    stock_data: dict[str, pd.DataFrame] = {}
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {
-            executor.submit(loader.load, symbol, begin, end): symbol
-            for symbol in universe
-        }
-        for future in as_completed(futures):
-            symbol = futures[future]
-            try:
-                df = future.result()
-                if df is not None and len(df) >= 60:
-                    stock_data[symbol] = df
-            except Exception as exc:
-                logger.debug("skip %s: %s", symbol, exc)
+    # Load all data in a single DuckDB query (faster and thread-safe)
+    stock_data = loader.load_batch(universe, begin, end)
+    stock_data = {sym: df for sym, df in stock_data.items() if len(df) >= 60}
 
     logger.info("local_select: loaded %d stocks", len(stock_data))
     if len(stock_data) < 10:

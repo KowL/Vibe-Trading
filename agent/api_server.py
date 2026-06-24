@@ -1797,6 +1797,11 @@ def _get_session_service():
     pub.set_event_bus(event_bus)
     set_publisher(pub)
 
+    # Wire strategy market engine to the publisher for SSE updates
+    from src.ashare.strategies.market_engine import get_market_engine
+    engine = get_market_engine()
+    engine.set_publisher(pub)
+
     _session_service = SessionService(
         store=store,
         event_bus=event_bus,
@@ -3343,7 +3348,7 @@ def serve_main(argv: list[str] | None = None) -> int:
         print("[dev] Frontend: http://localhost:5173")
         print(f"[dev] API: http://localhost:{args.port}")
     elif frontend_dist.exists():
-        if not any(route.path == "/" for route in app.routes):
+        if not any(getattr(route, "path", None) == "/" for route in app.routes):
             app.mount("/", SPAStaticFiles(directory=str(frontend_dist), html=True), name="frontend")
         print(f"[prod] Frontend served from {frontend_dist}")
     else:

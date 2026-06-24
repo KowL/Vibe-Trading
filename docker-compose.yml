@@ -12,6 +12,8 @@ services:
       # Override by exporting OLLAMA_BASE_URL (or setting it in a top-level .env)
       # when Ollama runs elsewhere or on a different port.
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # A-share local parquet data path (mounted below).
+      - ADSHARE_DATA_PATH=${ADSHARE_DATA_PATH:-/app/adshare/data}
     extra_hosts:
       # Maps host.docker.internal -> host gateway (needed on Linux; harmless on Docker Desktop).
       # Requires Docker Engine >= 20.10 / Compose v2 (host-gateway support).
@@ -26,6 +28,8 @@ services:
       - vibe-home:/home/vibe/.vibe-trading
       - vibe-swarm-runs:/app/agent/.swarm/runs
       - vibe-uploads:/app/agent/uploads
+      # A-share parquet data from host adshare installation.
+      - ${ADSHARE_HOST_DATA_PATH:-/Volumes/mm/project/adshare/data}:/app/adshare/data:ro
     restart: unless-stopped
 
   frontend:

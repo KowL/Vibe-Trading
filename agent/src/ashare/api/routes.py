@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.ashare.api import market_routes
 from src.ashare.backtest.limit_up_backtest import run_limit_up_backtest
 from src.ashare.models.limit_up import LimitUpDaily
 from src.ashare.models.portfolio import Portfolio, Trade, TradeSide
@@ -32,6 +33,7 @@ from src.ashare.tasks.limit_up_sync import LimitUpSyncTask
 from src.ashare.tasks.market_report import MarketReportTask, ReportKind
 
 router = APIRouter(prefix="/ashare", tags=["ashare"])
+router.include_router(market_routes.router)
 
 limit_up_store = LimitUpStore()
 portfolio_store = PortfolioStore()
@@ -390,10 +392,9 @@ def strategy_select(
     trade_date: date = Query(default_factory=date.today),
     top_n: int = Query(default=20, ge=5, le=100),
 ) -> dict[str, Any]:
-    """Run multi-factor stock selection."""
-    from src.ashare.strategies import MultiFactorSelector
-    selector = MultiFactorSelector()
-    pool = selector.select(trade_date=trade_date, top_n=top_n)
+    """Run multi-factor stock selection using local data."""
+    from src.ashare.strategies.local_select import local_select
+    pool = local_select(trade_date=trade_date, top_n=top_n)
     return {
         "trade_date": trade_date.isoformat(),
         "selected_count": len(pool),
@@ -406,7 +407,7 @@ def strategy_select(
                 "ma5": round(s.ma5, 2),
                 "ma20": round(s.ma20, 2),
                 "ma60": round(s.ma60, 2),
-                "atr_14": round(s.atr_14, 4),
+                "atr_14": round(s.atr_14, 4) if s.atr_14 else 0.0,
             }
             for s in pool
         ],
@@ -437,6 +438,16 @@ def strategy_backtest(body: StrategyBacktestRequest) -> dict[str, Any]:
         "profit_factor": round(result.profit_factor, 2),
         "num_trades": result.num_trades,
         "avg_holding_days": round(result.avg_holding_days, 1),
+        "equity_curve": [
+            {
+                "date": e["date"],
+                "total_value": round(e["total_value"], 2),
+                "drawdown_pct": round(e["drawdown_pct"], 2),
+                "num_positions": e["num_positions"],
+            }
+            for e in result.equity_curve
+        ],
+        "trades": result.trades,
     }
 
 

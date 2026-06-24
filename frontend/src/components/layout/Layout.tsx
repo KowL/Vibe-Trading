@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router-dom";
-import { Activity, BarChart3, Bot, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, TrendingUp, GitBranch, Flame, Wallet, Newspaper } from "lucide-react";
+import { Activity, BarChart3, Bot, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, TrendingUp, GitBranch, Flame, Wallet, Newspaper, Store } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
@@ -27,6 +27,7 @@ const A_SHARE_CHILDREN = [
   { to: "/ashare/portfolio", label: "模拟持仓", icon: Wallet },
   { to: "/ashare/report", label: "市场报告", icon: Newspaper },
   { to: "/ashare/strategy", label: "量化策略", icon: TrendingUp },
+  { to: "/ashare/strategy/market", label: "策略市场", icon: Store },
 ];
 
 export function Layout() {
