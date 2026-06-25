@@ -14,6 +14,7 @@ import { api, type LimitUpRecord } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { SectionHeader } from "@/components/common/SectionHeader";
 import { MetricTile } from "@/components/common/MetricTile";
+import { StockLink } from "@/components/common/StockLink";
 
 interface TierSpec {
   key: string;
@@ -297,11 +298,13 @@ export function LimitUpPage() {
                               <td className="px-3 py-2.5 font-mono text-xs">
                                 <span className="inline-flex items-center gap-1">
                                   {hot && <Flame className="h-3 w-3 text-red-600" />}
-                                  {r.symbol}
+                                  <StockLink symbol={r.symbol} />
                                 </span>
                               </td>
                               <td className="px-3 py-2.5">
-                                <div className="font-medium">{r.name}</div>
+                                <div className="font-medium">
+                                  <StockLink symbol={r.symbol}>{r.name}</StockLink>
+                                </div>
                                 {r.industry && (
                                   <div className="mt-0.5 text-[11px] text-muted-foreground">{r.industry}</div>
                                 )}

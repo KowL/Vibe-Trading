@@ -4,6 +4,7 @@ import { api, type Portfolio, type Trade } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { SectionHeader } from "@/components/common/SectionHeader";
 import { MetricTile } from "@/components/common/MetricTile";
+import { StockLink } from "@/components/common/StockLink";
 
 export function PortfolioPage() {
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
@@ -180,7 +181,9 @@ export function PortfolioPage() {
                     <tbody>
                       {trades.map((t) => (
                         <tr key={t.trade_id} className="border-b last:border-0 hover:bg-muted/30">
-                          <td className="px-3 py-2.5 font-mono text-xs">{t.symbol}</td>
+                          <td className="px-3 py-2.5 font-mono text-xs">
+                            <StockLink symbol={t.symbol} />
+                          </td>
                           <td className="px-3 py-2.5">
                             <span
                               className={cn(

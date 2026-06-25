@@ -18,6 +18,7 @@ import * as echarts from "echarts";
 import { cn } from "@/lib/utils";
 import { SectionHeader } from "@/components/common/SectionHeader";
 import { MetricTile } from "@/components/common/MetricTile";
+import { StockLink } from "@/components/common/StockLink";
 
 const API_BASE = "";
 
@@ -394,8 +395,12 @@ export default function StrategyMarketPage() {
                     {activeSnapshot.matched.map((m, idx) => (
                       <tr key={m.symbol} className="border-b last:border-b-0 hover:bg-muted/30">
                         <td className="px-4 py-2 text-muted-foreground">{m.rank ?? idx + 1}</td>
-                        <td className="px-4 py-2 font-mono font-medium">{m.symbol}</td>
-                        <td className="px-4 py-2">{m.name || "—"}</td>
+                        <td className="px-4 py-2 font-mono font-medium">
+                          <StockLink symbol={m.symbol} />
+                        </td>
+                        <td className="px-4 py-2">
+                          <StockLink symbol={m.symbol}>{m.name || "—"}</StockLink>
+                        </td>
                         <td className="px-4 py-2 text-center">
                           <span className={cn("px-2 py-0.5 rounded text-xs font-medium", signalBadge[m.signal].cls)}>
                             {signalBadge[m.signal].label}

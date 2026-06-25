@@ -5,6 +5,7 @@ import * as echarts from "echarts";
 import { cn } from "@/lib/utils";
 import { SectionHeader } from "@/components/common/SectionHeader";
 import { MetricTile } from "@/components/common/MetricTile";
+import { StockLink } from "@/components/common/StockLink";
 
 const API_BASE = "";
 
@@ -293,8 +294,12 @@ export default function StrategyPage() {
                   <tbody>
                     {selectResult.stocks.map((s: StockPick) => (
                       <tr key={s.symbol} className="border-b last:border-b-0 hover:bg-muted/30">
-                        <td className="px-3 py-2 font-mono">{s.symbol}</td>
-                        <td className="px-3 py-2">{s.name || "—"}</td>
+                        <td className="px-3 py-2 font-mono">
+                          <StockLink symbol={s.symbol} />
+                        </td>
+                        <td className="px-3 py-2">
+                          <StockLink symbol={s.symbol}>{s.name || "—"}</StockLink>
+                        </td>
                         <td className="px-3 py-2 text-right font-semibold">{s.composite_score.toFixed(3)}</td>
                         <td className="px-3 py-2 text-right">{s.momentum_20d.toFixed(1)}%</td>
                         <td className="px-3 py-2 text-right">{s.volume_ratio.toFixed(2)}x</td>
@@ -426,7 +431,9 @@ export default function StrategyPage() {
                           {sellTrades.map((t, idx) => (
                             <tr key={`${t.symbol}-${t.date}-${idx}`} className="border-b last:border-b-0 hover:bg-muted/30">
                               <td className="px-3 py-2">{t.date}</td>
-                              <td className="px-3 py-2 font-mono">{t.symbol}</td>
+                              <td className="px-3 py-2 font-mono">
+                                <StockLink symbol={t.symbol} />
+                              </td>
                               <td className="px-3 py-2 text-right">{t.price.toFixed(2)}</td>
                               <td className="px-3 py-2 text-right">{t.quantity}</td>
                               <td className={cn("px-3 py-2 text-right font-medium", (t.pnl_pct ?? 0) >= 0 ? "text-green-600" : "text-red-600")}>
@@ -462,7 +469,9 @@ export default function StrategyPage() {
                           {buyTrades.map((t, idx) => (
                             <tr key={`${t.symbol}-${t.date}-${idx}`} className="border-b last:border-b-0 hover:bg-muted/30">
                               <td className="px-3 py-2">{t.date}</td>
-                              <td className="px-3 py-2 font-mono">{t.symbol}</td>
+                              <td className="px-3 py-2 font-mono">
+                                <StockLink symbol={t.symbol} />
+                              </td>
                               <td className="px-3 py-2 text-right">{t.price.toFixed(2)}</td>
                               <td className="px-3 py-2 text-right">{t.quantity}</td>
                               <td className="px-3 py-2 text-xs text-muted-foreground">{t.reason}</td>
