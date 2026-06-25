@@ -73,6 +73,7 @@ BOLL_DEF = StrategyDefinition(
     params=[],
     supports_backtest=False,  # 盘中策略，不做历史回测
     supports_realtime=True,
+    market_visible=False,  # 信号投递策略，不显示在策略市场
 )
 
 

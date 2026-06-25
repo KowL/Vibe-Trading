@@ -172,7 +172,7 @@ async def test_engine_refresh_uses_runner_and_publishes(monkeypatch: Any) -> Non
 
 
 @pytest.mark.asyncio
-async def test_engine_refresh_all_runs_every_strategy(monkeypatch: Any) -> None:
+async def test_engine_refresh_all_runs_every_market_strategy(monkeypatch: Any) -> None:
     engine = StrategyMarketEngine(max_concurrent=5)
 
     def fake_runner(request: StrategyRunRequest) -> StrategySnapshot:
@@ -191,11 +191,32 @@ async def test_engine_refresh_all_runs_every_strategy(monkeypatch: Any) -> None:
         StrategyDefinition(id="beta", name="Beta", description="", category=StrategyCategory.TIMING),
         fake_runner,
     ))
-    monkeypatch.setattr(strategy_registry, "list_strategy_ids", lambda: ["alpha", "beta"])
+    monkeypatch.setattr(strategy_registry, "list_market_strategy_ids", lambda: ["alpha", "beta"])
 
     results = await engine.refresh_all()
     assert set(results.keys()) == {"alpha", "beta"}
     assert all(s.status == "success" for s in results.values())
+
+
+def test_registry_hidden_strategies_still_registered() -> None:
+    """Signal-delivery strategies remain registered but are not market-visible."""
+    from src.ashare.strategies.market_engine import get_market_engine
+
+    get_market_engine()
+    assert "my_multi_factor" in strategy_registry.list_strategy_ids()
+    assert "my_bollinger" in strategy_registry.list_strategy_ids()
+    market_ids = strategy_registry.list_market_strategy_ids()
+    assert "my_multi_factor" not in market_ids
+    assert "my_bollinger" not in market_ids
+
+
+def test_engine_catalogue_excludes_hidden_strategies() -> None:
+    from src.ashare.strategies.market_engine import get_market_engine
+
+    engine = get_market_engine()
+    ids = {d.id for d in engine.catalogue()}
+    assert "my_multi_factor" not in ids
+    assert "my_bollinger" not in ids
 
 
 @pytest.mark.asyncio

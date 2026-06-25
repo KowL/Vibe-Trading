@@ -78,6 +78,7 @@ MYF_DEF = StrategyDefinition(
     ],
     supports_backtest=True,
     supports_realtime=False,  # 这是 EOD 策略，不做盘中实时
+    market_visible=False,  # 信号投递策略，不显示在策略市场
 )
 
 

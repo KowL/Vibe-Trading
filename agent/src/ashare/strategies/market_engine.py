@@ -42,12 +42,16 @@ class StrategyMarketEngine:
         self._publisher = publisher
 
     def catalogue(self) -> list[StrategyDefinition]:
-        """Return all registered strategy definitions."""
-        return strategy_registry.list_definitions()
+        """Return market-visible strategy definitions."""
+        return strategy_registry.list_market_definitions()
 
     def strategy_ids(self) -> list[str]:
         """Return all registered strategy ids."""
         return strategy_registry.list_strategy_ids()
+
+    def market_strategy_ids(self) -> list[str]:
+        """Return market-visible strategy ids."""
+        return strategy_registry.list_market_strategy_ids()
 
     async def refresh(
         self,
@@ -105,9 +109,11 @@ class StrategyMarketEngine:
         params: dict[str, Any] | None = None,
         run_backtest: bool = True,
     ) -> dict[str, StrategySnapshot]:
-        """Refresh every registered strategy.
+        """Refresh every market-visible strategy.
 
-        A semaphore limits how many CPU-heavy backtests run at once.
+        Signal-delivery strategies that are not market-visible are skipped;
+        they are refreshed by their own scheduler jobs. A semaphore limits
+        how many CPU-heavy backtests run at once.
         """
         semaphore = asyncio.Semaphore(self._max_concurrent)
 
@@ -121,15 +127,23 @@ class StrategyMarketEngine:
                 )
 
         results = await asyncio.gather(
-            *[_run_one(sid) for sid in self.strategy_ids()]
+            *[_run_one(sid) for sid in self.market_strategy_ids()]
         )
         return {snap.strategy_id: snap for snap in results}
 
     def get_state(self) -> StrategyMarketState:
-        """Return the current market state."""
+        """Return the current market state.
+
+        Only market-visible strategies and their snapshots are exposed to the
+        strategy-market UI; hidden signal-delivery strategies are kept internal.
+        """
+        visible_ids = set(self.market_strategy_ids())
+        all_snapshots = self.store.get_all()
         return StrategyMarketState(
             strategies=self.catalogue(),
-            snapshots=self.store.get_all(),
+            snapshots={
+                sid: snap for sid, snap in all_snapshots.items() if sid in visible_ids
+            },
             last_updated=self.store.last_updated,
         )
 

@@ -45,6 +45,7 @@ class StrategyDefinition(BaseModel):
     params: list[StrategyParam] = Field(default_factory=list)
     supports_backtest: bool = True
     supports_realtime: bool = True
+    market_visible: bool = True
 
 
 class MatchedSymbol(BaseModel):

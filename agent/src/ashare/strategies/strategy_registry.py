@@ -61,3 +61,17 @@ def list_definitions() -> list[StrategyDefinition]:
 def list_strategy_ids() -> list[str]:
     """Return all registered strategy IDs."""
     return sorted(_REGISTRY.keys())
+
+
+def list_market_definitions() -> list[StrategyDefinition]:
+    """Return market-visible strategy definitions, sorted by name."""
+    return [
+        d
+        for d, _ in sorted(_REGISTRY.values(), key=lambda x: x[0].name)
+        if d.market_visible
+    ]
+
+
+def list_market_strategy_ids() -> list[str]:
+    """Return market-visible strategy IDs."""
+    return sorted(d.id for d, _ in _REGISTRY.values() if d.market_visible)
