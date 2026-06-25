@@ -5,9 +5,12 @@ simple file-lock guard: each task writes a lock file after success, and
 skips if the lock already exists for the current calendar day.
 
 Time windows (Shanghai TZ):
-    09:00-09:30  market_report_open
-    15:30-16:00  limit_up_sync
-    18:00-18:30  market_report_close
+    09:00-09:30    market_report_open
+    09:30-15:00    my_bollinger_scan   (every 5 min, no daily lock)
+    15:30-16:00    limit_up_sync
+    16:00-16:30    strategy_market_refresh
+    16:30-17:00    my_multi_factor_eod
+    18:00-18:30    market_report_close
     Friday 19:00-19:30  market_report_weekly
 """
 
@@ -47,11 +50,26 @@ class _TimeWindow:
 
 _TASK_WINDOWS: dict[str, _TimeWindow] = {
     "market_report_open": _TimeWindow(time(9, 0), time(9, 30)),
+    "my_bollinger_scan": _TimeWindow(time(9, 30), time(15, 0)),  # intraday; no daily lock
     "limit_up_sync": _TimeWindow(time(15, 30), time(16, 0)),
+    "strategy_market_refresh": _TimeWindow(time(16, 0), time(16, 30)),
+    "my_multi_factor_eod": _TimeWindow(time(16, 30), time(17, 0)),
     "market_report_close": _TimeWindow(time(18, 0), time(18, 30)),
     "market_report_weekly": _TimeWindow(time(19, 0), time(19, 30), weekdays={4}),  # Friday
-    "strategy_market_refresh": _TimeWindow(time(16, 0), time(16, 30)),
 }
+
+#: Tasks that run at most once per trading day. Tasks outside this set
+#: (e.g. ``my_bollinger_scan``) are interval-driven and re-fire on every
+#: tick the scheduler hands them — they MUST NOT take a daily lock,
+#: otherwise the lock would suppress all subsequent ticks the same day.
+_DAILY_LOCK_TASKS: frozenset[str] = frozenset({
+    "market_report_open",
+    "limit_up_sync",
+    "strategy_market_refresh",
+    "my_multi_factor_eod",
+    "market_report_close",
+    "market_report_weekly",
+})
 
 
 # --------------------------------------------------------------------------- #
@@ -144,8 +162,10 @@ class AShareTaskRunner:
         """
         today = _today_shanghai()
 
-        # 1. Already ran today?
-        if _is_locked(task_id, today):
+        # 1. Daily-lock guard: skipped for interval tasks (e.g. bollinger
+        #    intraday scan) so a single tick does not consume the day's
+        #    entire budget.
+        if task_id in _DAILY_LOCK_TASKS and _is_locked(task_id, today):
             logger.debug("%s already ran on %s — skipping", task_id, today)
             return None
 
@@ -193,6 +213,40 @@ class AShareTaskRunner:
             result = await self.report_task.run(ReportKind.WEEKLY)
             self._publish_report(result, "weekly")
             return result
+        if task_id == "my_multi_factor_eod":
+            # EOD 多因子选股：跑一次，匹配项作为信号推到 delivery
+            from src.ashare.strategies.market_engine import get_market_engine
+            from src.ashare.signals.delivery import get_delivery_service
+
+            today = _today_shanghai()
+            engine = get_market_engine()
+            # 显式传 market_date，让 runner 在指定日期算（不用 date.today()）
+            snap = await engine.refresh(
+                "my_multi_factor",
+                market_date=today,
+                params={"top_n": 10, "bottom_n": 10},
+                run_backtest=False,
+            )
+            delivery = get_delivery_service()
+            for m in snap.matched:
+                ref_price = float(m.metadata.get("last_close") or 0.0)
+                # rank 不在 deliver_for_symbol 接口里，放到 metadata 一起传
+                await delivery.deliver_for_symbol(
+                    strategy_id="my_multi_factor",
+                    market_date=today,
+                    symbol=m.symbol, side=m.signal,
+                    ref_price=ref_price,
+                    confidence=m.confidence,
+                    reason=m.metadata.get("decision", "ranked"),
+                    metadata={**m.metadata, "rank": m.rank},
+                )
+            return snap
+        if task_id == "my_bollinger_scan":
+            # 盘中布林带：runner 内部已为每只命中标的 create_task(delivery.deliver_for_symbol)，
+            # 这里只跑策略拿 snapshot，不重复投递
+            from src.ashare.strategies.market_engine import get_market_engine
+            engine = get_market_engine()
+            return await engine.refresh("my_bollinger", run_backtest=False)
         raise ValueError(f"unknown task: {task_id}")
 
     def _publish_report(self, result: Any, kind: str) -> None:
@@ -248,6 +302,18 @@ def _build_jobs() -> list[Job]:
             next_run_at=now_ms,
             schedule="interval:60000",
             payload={"task": "strategy_market_refresh"},
+        ),
+        Job(
+            id="ashare_my_multi_factor_eod",
+            next_run_at=now_ms,
+            schedule="interval:60000",  # window guard is the source of truth
+            payload={"task": "my_multi_factor_eod"},
+        ),
+        Job(
+            id="ashare_my_bollinger_scan",
+            next_run_at=now_ms,
+            schedule="interval:300000",  # 5 分钟一跑（盘中）
+            payload={"task": "my_bollinger_scan"},
         ),
     ]
 

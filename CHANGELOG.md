@@ -14,6 +14,27 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   `/ashare/strategy/compare` with shared-params form, strategy cards, and
   coverage warnings. Introduced a pluggable `selector_registry` and refactored
   `strategy_backtest` to delegate to the shared `run_backtest` engine.
+- **A-share signal delivery subsystem.** New `agent/src/ashare/signals/` package
+  turns strategy `MatchedSymbol` rows into versioned, deduplicated
+  `NormalizedSignal` records and fans them out to local JSONL audit, SSE
+  broadcast, and opt-in webhook sinks (Bark / Telegram / WeCom / generic).
+  Includes FIFO deduplicator, async `SignalDeliveryService` that never raises,
+  YAML-driven webhook config, and CLI subcommands
+  (`ashare signals {list,test-push,audit,config}`). 34 unit tests in
+  `agent/tests/ashare/signals/` cover models, dedup, audit, config and
+  delivery pipeline.
+- **A-share user strategies.** Register two reference strategies on the
+  strategy market: `my_multi_factor` (EOD multi-symbol long/short rank
+  selection backed by adshare daily klines) and `my_bollinger`
+  (intraday Bollinger band scan across a watched symbol list).
+  Both strategies expose their runs through the standard
+  `engine.refresh(...)` path and feed the new signal delivery pipeline.
+- **A-share scheduler windows for user strategies.** Add two time windows
+  and matching jobs to `agent/src/ashare/scheduler.py`:
+  `my_multi_factor_eod` (16:30 daily) and `my_bollinger_scan`
+  (every 5 minutes during trading hours). Bollinger is intentionally
+  excluded from the daily lock list so it can run on the intraday cadence.
+
 
 ### Changed
 
