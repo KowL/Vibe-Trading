@@ -1,14 +1,16 @@
 """Lightweight stock-name resolver with fallback cache.
 
-Tries adshare's stock_basic endpoint first, then falls back to a small
-hard-coded map for the default liquid universe so local development still
-shows names when adshare is offline.
+Tries adshare's stock_basic endpoint first, then falls back to the local
+``meta/codes.parquet`` shipped with the adshare dataset, and finally to a
+small hard-coded map so local development still shows names when everything
+else is offline.
 """
 
 from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,52 @@ _FALLBACK_NAMES: dict[str, str] = {
 }
 
 
+def _detect_data_root() -> Path:
+    """Auto-detect adshare data directory."""
+    for env_var in ("ADSHARE_DATA_PATH",):
+        env_path = __import__("os").environ.get(env_var)
+        if env_path:
+            return Path(env_path)
+    candidates = [
+        "/Volumes/mm/project/adshare/data",
+        "/Users/lijun/project/adshare/data",
+        "/Users/lijun/adshare/data",
+        "/app/adshare/data",
+    ]
+    for c in candidates:
+        p = Path(c)
+        if p.exists():
+            return p
+    return Path("/app/adshare/data")
+
+
+def _load_from_codes_parquet() -> dict[str, str] | None:
+    """Load symbol -> name from adshare meta/codes.parquet if available."""
+    try:
+        import duckdb
+
+        root = _detect_data_root()
+        path = root / "meta" / "codes.parquet"
+        if not path.exists():
+            return None
+
+        con = duckdb.connect(database=":memory:")
+        df = con.execute(
+            f"SELECT code, name FROM read_parquet('{path}') WHERE code IS NOT NULL"
+        ).fetchdf()
+        names = {
+            str(row["code"]).strip(): str(row["name"]).strip()
+            for _, row in df.iterrows()
+            if str(row["code"]).strip() and str(row["name"]).strip()
+        }
+        if len(names) > 100:
+            logger.info("loaded %d stock names from %s", len(names), path)
+            return names
+    except Exception as exc:
+        logger.debug("codes.parquet name load failed: %s", exc)
+    return None
+
+
 @lru_cache(maxsize=1)
 def _load_name_map() -> dict[str, str]:
     """Load symbol -> name map from adshare, with fallback."""
@@ -118,7 +166,12 @@ def _load_name_map() -> dict[str, str]:
             if len(names) > 100:
                 return names
     except Exception as exc:
-        logger.debug("adshare stock_basic failed, using fallback names: %s", exc)
+        logger.debug("adshare stock_basic failed, trying codes.parquet: %s", exc)
+
+    parquet_names = _load_from_codes_parquet()
+    if parquet_names:
+        return parquet_names
+
     return _FALLBACK_NAMES.copy()
 
 
