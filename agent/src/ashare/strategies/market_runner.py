@@ -593,3 +593,17 @@ register_strategy(TIMING_DEF)(_run_timing)
 register_strategy(BAND_DEF)(_run_band)
 register_strategy(ADAPTIVE_DEF)(_run_adaptive)
 register_strategy(PROFILE_DEF)(_run_profile)
+
+
+# --------------------------------------------------------------------------- #
+# User-defined strategies (signal-delivery)                                  #
+# --------------------------------------------------------------------------- #
+# These strategies emit signals to LocalSink / SSESink instead of the backtest
+# flow used by the built-in runners above. See docs/superpowers/specs/
+# 2026-06-24-signal-delivery-design.md §4.2 and §4.3 for the design.
+
+from src.ashare.strategies.my_multi_factor import MYF_DEF, run_myf  # noqa: E402
+from src.ashare.strategies.my_bollinger import BOLL_DEF, run_boll  # noqa: E402
+
+register_strategy(MYF_DEF)(run_myf)
+register_strategy(BOLL_DEF)(run_boll)

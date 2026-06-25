@@ -16,6 +16,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   (`ashare signals {list,test-push,audit,config}`). 34 unit tests in
   `agent/tests/ashare/signals/` cover models, dedup, audit, config and
   delivery pipeline.
+- **A-share user strategies.** Register two reference strategies on the
+  strategy market: `my_multi_factor` (EOD multi-symbol long/short rank
+  selection backed by adshare daily klines) and `my_bollinger`
+  (intraday Bollinger band scan across a watched symbol list).
+  Both strategies expose their runs through the standard
+  `engine.refresh(...)` path and feed the new signal delivery pipeline.
+
 
 ### Changed
 
