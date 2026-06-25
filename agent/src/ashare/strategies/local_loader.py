@@ -5,6 +5,7 @@ Bypasses HTTP API and reads directly from adshare's on-disk Parquet files.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from datetime import date
@@ -192,6 +193,22 @@ class LocalKlineLoader:
                 return f"{c}.BJ"
         return c
 
+    def list_all_symbols(self, period: str = "daily") -> list[str]:
+        """Return all symbols that have local parquet data.
+
+        The returned symbols include the exchange suffix (e.g. "000001.SZ").
+        """
+        subdir = self._normalize_period(period)
+        directory = self.data_root / "A_share" / subdir
+        if not directory.exists():
+            return []
+        symbols = []
+        for path in directory.glob("*.parquet"):
+            code = path.stem
+            # parquet files are stored with the suffix already in the filename
+            symbols.append(self._safe_code(code))
+        return sorted(set(symbols))
+
 
 class CachedMultiFactorSelector:
     """MultiFactorSelector with pre-loaded data cache.
@@ -233,22 +250,69 @@ class CachedMultiFactorSelector:
 
     def _default_universe(self) -> list[str]:
         """Default liquid A-share universe."""
-        return [
-            "000001.SZ", "000002.SZ", "000063.SZ", "000100.SZ", "000333.SZ",
-            "000538.SZ", "000568.SZ", "000651.SZ", "000725.SZ", "000768.SZ",
-            "000858.SZ", "000895.SZ", "002001.SZ", "002007.SZ", "002024.SZ",
-            "002027.SZ", "002142.SZ", "002230.SZ", "002236.SZ", "002415.SZ",
-            "002460.SZ", "002475.SZ", "002594.SZ", "002714.SZ", "300014.SZ",
-            "300015.SZ", "300033.SZ", "300059.SZ", "300122.SZ", "300124.SZ",
-            "300274.SZ", "300408.SZ", "300433.SZ", "300750.SZ", "600000.SH",
-            "600009.SH", "600016.SH", "600028.SH", "600030.SH", "600031.SH",
-            "600036.SH", "600048.SH", "600104.SH", "600196.SH", "600276.SH",
-            "600309.SH", "600406.SH", "600436.SH", "600519.SH", "600585.SH",
-            "600690.SH", "600703.SH", "600745.SH", "600809.SH", "600837.SH",
-            "600887.SH", "600900.SH", "601012.SH", "601066.SH", "601088.SH",
-            "601166.SH", "601211.SH", "601318.SH", "601336.SH", "601398.SH",
-            "601601.SH", "601628.SH", "601668.SH", "601688.SH", "601766.SH",
-            "601857.SH", "601888.SH", "601899.SH", "601919.SH", "601995.SH",
-            "603259.SH", "603288.SH", "603501.SH", "603986.SH", "605117.SH",
-            "688111.SH", "688981.SH",
-        ]
+        return _DEFAULT_UNIVERSE
+
+
+_DEFAULT_UNIVERSE: list[str] = [
+    "000001.SZ", "000002.SZ", "000063.SZ", "000100.SZ", "000333.SZ",
+    "000538.SZ", "000568.SZ", "000651.SZ", "000725.SZ", "000768.SZ",
+    "000858.SZ", "000895.SZ", "002001.SZ", "002007.SZ", "002024.SZ",
+    "002027.SZ", "002142.SZ", "002230.SZ", "002236.SZ", "002415.SZ",
+    "002460.SZ", "002475.SZ", "002594.SZ", "002714.SZ", "300014.SZ",
+    "300015.SZ", "300033.SZ", "300059.SZ", "300122.SZ", "300124.SZ",
+    "300274.SZ", "300408.SZ", "300433.SZ", "300750.SZ", "600000.SH",
+    "600009.SH", "600016.SH", "600028.SH", "600030.SH", "600031.SH",
+    "600036.SH", "600048.SH", "600104.SH", "600196.SH", "600276.SH",
+    "600309.SH", "600406.SH", "600436.SH", "600519.SH", "600585.SH",
+    "600690.SH", "600703.SH", "600745.SH", "600809.SH", "600837.SH",
+    "600887.SH", "600900.SH", "601012.SH", "601066.SH", "601088.SH",
+    "601166.SH", "601211.SH", "601318.SH", "601336.SH", "601398.SH",
+    "601601.SH", "601628.SH", "601668.SH", "601688.SH", "601766.SH",
+    "601857.SH", "601888.SH", "601899.SH", "601919.SH", "601995.SH",
+    "603259.SH", "603288.SH", "603501.SH", "603986.SH", "605117.SH",
+    "688111.SH", "688981.SH",
+]
+
+
+def _universe_symbols(universe: str) -> list[str]:
+    """Map a universe id to a list of symbols.
+
+    For now all ids fall back to the default liquid universe because the
+    on-disk Parquet set does not ship with index-constituent metadata.
+    ``all_a`` attempts to load every parquet file under A_share/daily.
+    """
+    if universe == "all_a":
+        return []
+    return _DEFAULT_UNIVERSE[:]
+
+
+@functools.lru_cache(maxsize=8)
+def load_panel_cached(
+    universe: str, start_date: date, end_date: date
+) -> dict[str, pd.DataFrame]:
+    """Load a panel of price data for backtest comparison.
+
+    Returns a dict mapping symbol to a DataFrame with a date index and
+    columns: open, high, low, close, volume, amount.
+    """
+    loader = LocalKlineLoader()
+    begin = start_date.strftime("%Y%m%d")
+    end = end_date.strftime("%Y%m%d")
+
+    if universe == "all_a":
+        data_root = loader.data_root
+        files = list((data_root / "A_share" / "daily").glob("*.parquet"))
+        symbols = [f.stem for f in files]
+    else:
+        symbols = _universe_symbols(universe)
+
+    logger.info(
+        "load_panel_cached: universe=%s symbols=%d %s ~ %s",
+        universe,
+        len(symbols),
+        begin,
+        end,
+    )
+    panel = loader.load_batch(symbols, begin, end)
+    logger.info("load_panel_cached: loaded %d symbols", len(panel))
+    return panel

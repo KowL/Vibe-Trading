@@ -43,6 +43,7 @@ interface StrategyDef {
 
 interface MatchedSymbol {
   symbol: string;
+  name: string;
   signal: "buy" | "sell" | "hold" | "watch";
   score: number | null;
   confidence: number;
@@ -382,6 +383,7 @@ export default function StrategyMarketPage() {
                     <tr>
                       <th className="px-4 py-2 text-left font-medium">排名</th>
                       <th className="px-4 py-2 text-left font-medium">代码</th>
+                      <th className="px-4 py-2 text-left font-medium">名称</th>
                       <th className="px-4 py-2 text-center font-medium">信号</th>
                       <th className="px-4 py-2 text-right font-medium">得分</th>
                       <th className="px-4 py-2 text-right font-medium">置信度</th>
@@ -393,6 +395,7 @@ export default function StrategyMarketPage() {
                       <tr key={m.symbol} className="border-b last:border-b-0 hover:bg-muted/30">
                         <td className="px-4 py-2 text-muted-foreground">{m.rank ?? idx + 1}</td>
                         <td className="px-4 py-2 font-mono font-medium">{m.symbol}</td>
+                        <td className="px-4 py-2">{m.name || "—"}</td>
                         <td className="px-4 py-2 text-center">
                           <span className={cn("px-2 py-0.5 rounded text-xs font-medium", signalBadge[m.signal].cls)}>
                             {signalBadge[m.signal].label}

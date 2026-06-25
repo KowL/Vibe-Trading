@@ -6,6 +6,7 @@ Event-driven backtest with realistic execution assumptions.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -18,6 +19,72 @@ from src.ashare.strategies.multi_factor import MultiFactorSelector, StockScore
 from src.ashare.strategies.trend_timing import Position, Signal, TrendTiming, TradeSignal
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_float(x: float) -> float:
+    """Defensive normalisation so JSON never sees inf/nan."""
+    if not isinstance(x, float):
+        try:
+            x = float(x)
+        except Exception:
+            return 0.0
+    return 0.0 if not math.isfinite(x) else x
+
+
+def _compute_metrics(
+    *,
+    equity_curve: list[dict[str, Any]],
+    trades: list[dict[str, Any]],
+    initial_cash: float,
+    start_date: date,
+    end_date: date,
+) -> dict[str, float]:
+    """Compute the 7 core metrics from an equity curve and trade log."""
+    final_value = equity_curve[-1]["total_value"] if equity_curve else initial_cash
+    total_return_pct = (final_value / initial_cash - 1) * 100 if initial_cash else 0.0
+
+    days = (end_date - start_date).days
+    years = days / 365.25
+    if years > 0 and final_value > 0 and initial_cash > 0:
+        annualized_return_pct = ((final_value / initial_cash) ** (1 / years) - 1) * 100
+    else:
+        annualized_return_pct = 0.0
+    if days < 30:
+        annualized_return_pct = 0.0
+
+    values = np.array([e["total_value"] for e in equity_curve]) if equity_curve else np.array([initial_cash])
+    running_max = np.maximum.accumulate(values)
+    drawdowns = (running_max - values) / running_max * 100
+    max_drawdown_pct = float(np.max(drawdowns)) if len(drawdowns) else 0.0
+
+    if len(equity_curve) > 10:
+        daily_returns = np.diff(values) / values[:-1]
+        excess_returns = daily_returns - 0.03 / 252
+        std = np.std(daily_returns)
+        sharpe = float(np.mean(excess_returns) / std * np.sqrt(252)) if std > 0 else 0.0
+    else:
+        sharpe = 0.0
+
+    completed = [t for t in trades if t.get("action") == "sell" and "pnl_pct" in t]
+    winning = [t for t in completed if t["pnl_pct"] > 0]
+    losing = [t for t in completed if t["pnl_pct"] <= 0]
+    gross_profit = sum(t["pnl_pct"] for t in winning)
+    gross_loss = abs(sum(t["pnl_pct"] for t in losing))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+
+    avg_holding_days = float(
+        np.mean([t.get("days_held", 0) for t in completed]) if completed else 0.0
+    )
+
+    return {
+        "total_return_pct": round(_safe_float(total_return_pct), 2),
+        "annualized_return_pct": round(_safe_float(annualized_return_pct), 2),
+        "max_drawdown_pct": round(_safe_float(max_drawdown_pct), 2),
+        "sharpe": round(_safe_float(sharpe), 2),
+        "profit_factor": round(_safe_float(profit_factor), 2),
+        "num_trades": len(trades),
+        "avg_holding_days": round(_safe_float(avg_holding_days), 1),
+    }
 
 
 @dataclass
@@ -247,60 +314,35 @@ class MultiFactorBacktest:
                 continue
 
         # Compute metrics
-        final_value = equity_curve[-1]["total_value"] if equity_curve else initial_cash
-        total_return = (final_value / initial_cash - 1) * 100
+        metrics = _compute_metrics(
+            equity_curve=equity_curve,
+            trades=trades_log,
+            initial_cash=initial_cash,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
-        days = (end_date - start_date).days
-        years = days / 365.25
-        annualized = ((final_value / initial_cash) ** (1 / years) - 1) * 100 if years > 0 else 0
-
-        # Sharpe ratio (simplified, assuming 3% risk-free rate)
-        if len(equity_curve) > 10:
-            values = np.array([e["total_value"] for e in equity_curve])
-            daily_returns = np.diff(values) / values[:-1]
-            excess_returns = daily_returns - 0.03 / 252  # daily risk-free
-            sharpe = (
-                np.mean(excess_returns) / np.std(daily_returns) * np.sqrt(252)
-                if np.std(daily_returns) > 0
-                else 0
-            )
-        else:
-            sharpe = 0
-
-        # Win rate
         winning_trades = [t for t in trades_log if t.get("pnl_pct", 0) > 0]
         losing_trades = [t for t in trades_log if t.get("pnl_pct", 0) <= 0]
         win_rate = (
             len(winning_trades) / len(trades_log) * 100 if trades_log else 0
         )
 
-        # Profit factor
-        gross_profit = sum(t["pnl_pct"] for t in winning_trades)
-        gross_loss = abs(sum(t["pnl_pct"] for t in losing_trades))
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
-
-        # Avg holding days
-        avg_hold = float(
-            np.mean([t["days_held"] for t in trades_log if "days_held" in t])
-            if trades_log
-            else 0.0
-        )
-
         return BacktestResult(
             start_date=start_date,
             end_date=end_date,
             initial_cash=initial_cash,
-            final_value=final_value,
-            total_return_pct=total_return,
-            annualized_return_pct=annualized,
-            max_drawdown_pct=max_drawdown,
-            sharpe_ratio=sharpe,
+            final_value=equity_curve[-1]["total_value"] if equity_curve else initial_cash,
+            total_return_pct=metrics["total_return_pct"],
+            annualized_return_pct=metrics["annualized_return_pct"],
+            max_drawdown_pct=metrics["max_drawdown_pct"],
+            sharpe_ratio=metrics["sharpe"],
             win_rate=win_rate,
-            profit_factor=profit_factor,
-            num_trades=len(trades_log),
+            profit_factor=metrics["profit_factor"],
+            num_trades=metrics["num_trades"],
             num_winning_trades=len(winning_trades),
             num_losing_trades=len(losing_trades),
-            avg_holding_days=avg_hold,
+            avg_holding_days=metrics["avg_holding_days"],
             equity_curve=equity_curve,
             trades=trades_log,
             daily_signals=daily_signals_log,

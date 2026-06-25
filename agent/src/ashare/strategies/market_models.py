@@ -51,6 +51,7 @@ class MatchedSymbol(BaseModel):
     """A symbol matched by a strategy run."""
 
     symbol: str
+    name: str = ""
     signal: Literal["buy", "sell", "hold", "watch"]
     score: float | None = None
     confidence: float = 0.0

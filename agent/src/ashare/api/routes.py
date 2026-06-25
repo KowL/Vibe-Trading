@@ -29,6 +29,7 @@ from src.ashare.models.limit_up import LimitUpDaily
 from src.ashare.models.portfolio import Portfolio, Trade, TradeSide
 from src.ashare.storage.limit_up_store import LimitUpStore
 from src.ashare.storage.portfolio_store import PortfolioStore
+from src.ashare.strategies.compare_models import StrategyCompareRequest
 from src.ashare.tasks.limit_up_sync import LimitUpSyncTask
 from src.ashare.tasks.market_report import MarketReportTask, ReportKind
 
@@ -401,6 +402,7 @@ def strategy_select(
         "stocks": [
             {
                 "symbol": s.symbol,
+                "name": s.name or "",
                 "composite_score": round(s.composite_score, 3),
                 "momentum_20d": round(s.momentum_20d, 1),
                 "volume_ratio": round(s.volume_ratio, 2),
@@ -416,39 +418,65 @@ def strategy_select(
 
 @router.post("/strategy/backtest")
 def strategy_backtest(body: StrategyBacktestRequest) -> dict[str, Any]:
-    """Run multi-factor strategy backtest."""
-    from src.ashare.strategies import FastMultiFactorBacktest
-    bt = FastMultiFactorBacktest()
-    bt.preload_data(start_date=body.start_date, end_date=body.end_date, universe=body.universe)
-    result = bt.run(
+    """Run local_select strategy backtest."""
+    from src.ashare.strategies.compare_backtest import run_backtest
+    from src.ashare.strategies.compare_engine import _rebalance_dates
+    from src.ashare.strategies.compare_models import LocalSelectParams, StrategyCompareShared, StrategySpec
+    from src.ashare.strategies.local_loader import load_panel_cached
+    from src.ashare.strategies.selector_registry import resolve_selector
+
+    universe_id = "csi300" if not body.universe else "all_a"
+    shared = StrategyCompareShared(
         start_date=body.start_date,
         end_date=body.end_date,
         initial_cash=body.initial_cash,
+        universe=universe_id,  # type: ignore[arg-type]
+        commission_bps=3.0,
+        slippage_bps=5.0,
     )
+    spec = StrategySpec(
+        name="backtest",
+        selector="local_select",
+        params=LocalSelectParams(),
+    )
+    panel = load_panel_cached(universe_id, body.start_date, body.end_date)
+    rebars = _rebalance_dates(panel, body.start_date, body.end_date)
+    outcome = run_backtest(
+        spec=spec,
+        shared=shared,
+        selector_fn=resolve_selector(spec.selector),
+        panel=panel,
+        rebalance_dates=rebars,
+    )
+
+    trades = outcome.trades
+    winning = [t for t in trades if t.get("pnl_pct", 0) > 0]
+    win_rate = len(winning) / len(trades) * 100 if trades else 0.0
+
     return {
         "start_date": body.start_date.isoformat(),
         "end_date": body.end_date.isoformat(),
         "initial_cash": body.initial_cash,
-        "final_value": round(result.final_value, 2),
-        "total_return_pct": round(result.total_return_pct, 2),
-        "annualized_return_pct": round(result.annualized_return_pct, 2),
-        "max_drawdown_pct": round(result.max_drawdown_pct, 2),
-        "sharpe_ratio": round(result.sharpe_ratio, 2),
-        "win_rate": round(result.win_rate, 1),
-        "profit_factor": round(result.profit_factor, 2),
-        "num_trades": result.num_trades,
-        "avg_holding_days": round(result.avg_holding_days, 1),
-        "equity_curve": [
-            {
-                "date": e["date"],
-                "total_value": round(e["total_value"], 2),
-                "drawdown_pct": round(e["drawdown_pct"], 2),
-                "num_positions": e["num_positions"],
-            }
-            for e in result.equity_curve
-        ],
-        "trades": result.trades,
+        "final_value": round(outcome.equity_curve[-1]["total_value"], 2) if outcome.equity_curve else body.initial_cash,
+        "total_return_pct": outcome.metrics["total_return_pct"],
+        "annualized_return_pct": outcome.metrics["annualized_return_pct"],
+        "max_drawdown_pct": outcome.metrics["max_drawdown_pct"],
+        "sharpe_ratio": outcome.metrics["sharpe"],
+        "win_rate": round(win_rate, 1),
+        "profit_factor": outcome.metrics["profit_factor"],
+        "num_trades": outcome.metrics["num_trades"],
+        "avg_holding_days": outcome.metrics["avg_holding_days"],
+        "equity_curve": outcome.equity_curve,
+        "trades": outcome.trades,
     }
+
+
+@router.post("/strategy/compare")
+def strategy_compare(body: StrategyCompareRequest) -> dict[str, Any]:
+    """Run a fair multi-strategy backtest comparison."""
+    from src.ashare.strategies.compare_engine import run_compare
+
+    return run_compare(body).model_dump()
 
 
 @router.get("/strategy/profile")

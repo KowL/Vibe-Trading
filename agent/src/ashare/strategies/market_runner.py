@@ -17,7 +17,7 @@ import pandas as pd
 from src.ashare.strategies.adaptive_backtest import AdaptiveBacktest
 from src.ashare.strategies.fast_backtest import FastMultiFactorBacktest
 from src.ashare.strategies.local_loader import LocalKlineLoader
-from src.ashare.strategies.local_select import local_select
+from src.ashare.strategies.local_select import local_select, mean_reversion_select, trend_select
 from src.ashare.strategies.market_models import (
     MatchedSymbol,
     StrategyCategory,
@@ -27,6 +27,7 @@ from src.ashare.strategies.market_models import (
     StrategyRunRequest,
     StrategySnapshot,
 )
+from src.ashare.strategies.stock_names import get_stock_name
 from src.ashare.strategies.stock_profile import StockProfile
 from src.ashare.strategies.strategy_registry import register_strategy
 
@@ -35,13 +36,6 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # Shared helpers
 # --------------------------------------------------------------------------- #
-
-
-def _default_universe() -> list[str]:
-    """Re-use the liquid A-share universe from local_select."""
-    from src.ashare.strategies.local_select import _default_universe as _universe
-
-    return _universe()
 
 
 def _detect_latest_trade_date(data_root: str | None = None) -> date:
@@ -136,12 +130,13 @@ def _run_selector(request: StrategyRunRequest) -> StrategySnapshot:
         pool = local_select(
             trade_date=market_date,
             data_root=_data_root(request),
-            universe=_universe_param(request.params),
+            universe=_universe_param(request.params) or ["all_a"],
             top_n=top_n,
         )
         matched = [
             MatchedSymbol(
                 symbol=s.symbol,
+                name=s.name or get_stock_name(s.symbol),
                 signal="watch",
                 score=round(s.composite_score, 4) if s.composite_score else None,
                 confidence=round(min(0.99, s.composite_score or 0.0), 4),
@@ -200,37 +195,31 @@ def _run_timing(request: StrategyRunRequest) -> StrategySnapshot:
     market_date = _market_date(request, _data_root(request))
     top_n = _int_param(request.params, "top_n", 20)
     try:
-        pool = local_select(
+        pool = trend_select(
             trade_date=market_date,
             data_root=_data_root(request),
-            universe=_universe_param(request.params),
+            universe=_universe_param(request.params) or ["all_a"],
             top_n=top_n,
         )
         matched: list[MatchedSymbol] = []
         for idx, s in enumerate(pool, start=1):
-            # Trend-timing entry filters
-            if (
-                s.composite_score >= 0.5
-                and s.momentum_20d >= 2.0
-                and s.volume_ratio >= 1.2
-                and s.ma5 > s.ma20 > s.ma60
-            ):
-                matched.append(
-                    MatchedSymbol(
-                        symbol=s.symbol,
-                        signal="buy",
-                        score=round(s.composite_score, 4),
-                        confidence=round(min(0.99, s.composite_score), 4),
-                        rank=idx,
-                        metadata={
-                            "momentum_20d": round(s.momentum_20d, 2),
-                            "volume_ratio": round(s.volume_ratio, 2),
-                            "ma5": round(float(s.ma5), 2),
-                            "ma20": round(float(s.ma20), 2),
-                            "ma60": round(float(s.ma60), 2),
-                        },
-                    )
+            matched.append(
+                MatchedSymbol(
+                    symbol=s.symbol,
+                    name=s.name or get_stock_name(s.symbol),
+                    signal="buy",
+                    score=round(s.composite_score, 4),
+                    confidence=round(min(0.99, s.composite_score), 4),
+                    rank=idx,
+                    metadata={
+                        "momentum_20d": round(s.momentum_20d, 2),
+                        "volume_ratio": round(s.volume_ratio, 2),
+                        "ma5": round(float(s.ma5), 2),
+                        "ma20": round(float(s.ma20), 2),
+                        "ma60": round(float(s.ma60), 2),
+                    },
                 )
+            )
 
         metrics: StrategyMetrics | None = None
         curve: list[dict[str, Any]] | None = None
@@ -277,10 +266,10 @@ def _run_band(request: StrategyRunRequest) -> StrategySnapshot:
     window = _int_param(request.params, "band_window", 20)
     width = _float_param(request.params, "band_width", 2.0)
     try:
-        pool = local_select(
+        pool = mean_reversion_select(
             trade_date=market_date,
             data_root=_data_root(request),
-            universe=_universe_param(request.params),
+            universe=_universe_param(request.params) or ["all_a"],
             top_n=top_n * 3,
         )
         loader = LocalKlineLoader(_data_root(request))
@@ -303,7 +292,7 @@ def _run_band(request: StrategyRunRequest) -> StrategySnapshot:
             lower = ma - width * std
             last = close.iloc[-1]
 
-            if last <= lower and s.momentum_20d > 0:
+            if last <= lower:
                 signal = "buy"
             elif last >= upper:
                 signal = "sell"
@@ -315,6 +304,7 @@ def _run_band(request: StrategyRunRequest) -> StrategySnapshot:
                 matched.append(
                     MatchedSymbol(
                         symbol=s.symbol,
+                        name=s.name or get_stock_name(s.symbol),
                         signal=signal,
                         score=round(s.composite_score, 4),
                         confidence=round(min(0.99, abs(last - ma) / (std + 1e-9) / width), 4),
@@ -351,9 +341,7 @@ def _run_adaptive(request: StrategyRunRequest) -> StrategySnapshot:
     try:
         start, end = _backtest_range(market_date)
         bt = AdaptiveBacktest(data_root=_data_root(request))
-        universe = _universe_param(request.params)
-        if universe is None:
-            universe = _default_universe()
+        universe = _universe_param(request.params) or ["all_a"]
         bt.preload_data(start_date=start, end_date=end, universe=universe)
         result = bt.run(
             start_date=start,
@@ -376,6 +364,7 @@ def _run_adaptive(request: StrategyRunRequest) -> StrategySnapshot:
                 matched.append(
                     MatchedSymbol(
                         symbol=sym,
+                        name=get_stock_name(sym),
                         signal="hold",
                         score=None,
                         confidence=0.8,
@@ -447,6 +436,7 @@ def _run_profile(request: StrategyRunRequest) -> StrategySnapshot:
             matched=[
                 MatchedSymbol(
                     symbol=symbol,
+                    name=get_stock_name(symbol),
                     signal="watch",
                     score=profile.hv_20,
                     confidence=round(min(0.99, profile.adx_14 / 50.0), 4),
@@ -470,7 +460,7 @@ def _run_profile(request: StrategyRunRequest) -> StrategySnapshot:
 SELECTOR_DEF = StrategyDefinition(
     id="local_selector",
     name="多因子选股",
-    description="基于动量、成交量、趋势强度的综合打分模型，每日筛选强势股。",
+    description="基于动量、成交量、趋势强度的综合打分模型，从全 A 股中每日筛选强势股。",
     category=StrategyCategory.SELECTOR,
     params=[
         StrategyParam(
@@ -495,7 +485,7 @@ SELECTOR_DEF = StrategyDefinition(
 TIMING_DEF = StrategyDefinition(
     id="trend_timing",
     name="趋势择时",
-    description="在选股池上叠加动量与成交量过滤，生成买入信号。",
+    description="从全 A 股中筛选强动量、强趋势、放量突破的强势股，生成买入信号。",
     category=StrategyCategory.TIMING,
     params=[
         StrategyParam(
@@ -513,7 +503,7 @@ TIMING_DEF = StrategyDefinition(
 BAND_DEF = StrategyDefinition(
     id="bollinger_band",
     name="布林带波段",
-    description="基于布林带上下轨生成高抛低吸的波段信号。",
+    description="从全 A 股中筛选短期超跌但长期趋势仍在的均值回复候选，再基于布林带上下轨生成高抛低吸信号。",
     category=StrategyCategory.BAND,
     params=[
         StrategyParam(
@@ -549,7 +539,7 @@ BAND_DEF = StrategyDefinition(
 ADAPTIVE_DEF = StrategyDefinition(
     id="adaptive_personality",
     name="自适应个性策略",
-    description="根据每只股票的历史股性（波动、趋势、均值回归）动态调整止损止盈与仓位。",
+    description="从全 A 股中根据每只股票的历史股性（波动、趋势、均值回归）动态选股，并自适应调整止损止盈与仓位。",
     category=StrategyCategory.ADAPTIVE,
     params=[
         StrategyParam(

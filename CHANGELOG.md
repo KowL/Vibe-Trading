@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A-share strategy compare.** New `POST /ashare/strategy/compare` endpoint
+  runs 2–4 selector specs in parallel against shared market/friction settings,
+  aligns equity curves by trading-day intersection, and returns metric tables
+  plus a multi-line ECharts curve. Added `ComparePage` at
+  `/ashare/strategy/compare` with shared-params form, strategy cards, and
+  coverage warnings. Introduced a pluggable `selector_registry` and refactored
+  `strategy_backtest` to delegate to the shared `run_backtest` engine.
+
 ### Changed
 
 ### Fixed

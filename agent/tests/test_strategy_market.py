@@ -293,9 +293,8 @@ def test_timing_runner_generates_buy_signals(monkeypatch: Any) -> None:
 
     scores = [
         _make_score("000001.SZ", momentum=5.0, volume_ratio=1.5, ma5=11, ma20=10.5, ma60=10),
-        _make_score("000002.SZ", momentum=0.5, volume_ratio=1.0),  # too weak
     ]
-    monkeypatch.setattr(market_runner, "local_select", lambda **kwargs: scores)
+    monkeypatch.setattr(market_runner, "trend_select", lambda **kwargs: scores)
 
     request = StrategyRunRequest(strategy_id="trend_timing", run_backtest=False)
     snapshot = market_runner._run_timing(request)
@@ -303,7 +302,6 @@ def test_timing_runner_generates_buy_signals(monkeypatch: Any) -> None:
     assert snapshot.status == "success"
     buy_symbols = [m.symbol for m in snapshot.matched if m.signal == "buy"]
     assert "000001.SZ" in buy_symbols
-    assert "000002.SZ" not in buy_symbols
 
 
 def test_band_runner_buy_signal_when_below_lower_band(monkeypatch: Any) -> None:
@@ -313,7 +311,7 @@ def test_band_runner_buy_signal_when_below_lower_band(monkeypatch: Any) -> None:
     import numpy as np
 
     scores = [_make_score("000001.SZ", momentum=3.0, volume_ratio=1.5)]
-    monkeypatch.setattr(market_runner, "local_select", lambda **kwargs: scores)
+    monkeypatch.setattr(market_runner, "mean_reversion_select", lambda **kwargs: scores)
 
     dates = pd.date_range("2025-05-01", "2025-06-20")
     # Price descends below the lower Bollinger band on the last day

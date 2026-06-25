@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.ashare.adshare_client import AdshareClient
+from src.ashare.strategies.stock_names import get_stock_name
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ class MultiFactorSelector:
         # 4. Rank each factor (cross-sectional)
         all_scores: dict[str, StockScore] = {}
         for symbol in stock_data:
-            all_scores[symbol] = StockScore(symbol=symbol)
+            all_scores[symbol] = StockScore(symbol=symbol, name=get_stock_name(symbol))
 
         for factor in self.ALIVE_FACTORS:
             fid = factor["id"]
@@ -310,6 +311,168 @@ class MultiFactorSelector:
 
         else:
             return 0.0
+
+
+def _compute_factor_value(factor_id: str, df: pd.DataFrame) -> float:
+    """Module-level factor computation reused by panel selection."""
+    close = df["close"]
+    volume = df["volume"]
+    amount = df["amount"]
+    vwap = amount / (volume + 1e-9)
+
+    if factor_id == "gtja191_120":
+        return (vwap.iloc[-1] - close.iloc[-1]) / (vwap.iloc[-1] + close.iloc[-1])
+    elif factor_id == "gtja191_114":
+        ret = close.pct_change().iloc[-20:]
+        vol = volume.iloc[-20:]
+        if len(ret) < 10:
+            return 0.0
+        return np.corrcoef(ret.fillna(0), vol.fillna(0))[0, 1]
+    elif factor_id == "gtja191_171":
+        ret = close.pct_change().iloc[-10:]
+        if len(ret) < 3:
+            return 0.0
+        return ret.diff().iloc[-1] * 100
+    elif factor_id == "gtja191_111":
+        vol_ratio = volume.iloc[-1] / volume.iloc[-20:].mean()
+        ret = close.pct_change().iloc[-5:]
+        price_accel = ret.diff().iloc[-1] if len(ret) >= 2 else 0
+        return vol_ratio * price_accel * 10
+    return 0.0
+
+
+def _multi_factor_from_panel(
+    panel: dict[str, pd.DataFrame],
+    trade_date: date,
+    top_n: int,
+    factor_weights: dict[str, float] | None = None,
+) -> list[StockScore]:
+    """Panel-based version of ``MultiFactorSelector.select`` for compare."""
+    alive = MultiFactorSelector.ALIVE_FACTORS
+    if factor_weights:
+        alive = [
+            {**f, "weight": factor_weights.get(f["id"], f["weight"])}
+            for f in alive
+        ]
+
+    td_str = trade_date.strftime("%Y-%m-%d")
+    scores: dict[str, StockScore] = {}
+    factor_values: dict[str, dict[str, float]] = {f["id"]: {} for f in alive}
+
+    for symbol, df in panel.items():
+        if df is None or df.empty:
+            continue
+        mask = df.index <= td_str
+        hist = df[mask]
+        if len(hist) < 60:
+            continue
+
+        scores[symbol] = StockScore(symbol=symbol, name=get_stock_name(symbol))
+        for factor in alive:
+            fid = factor["id"]
+            try:
+                val = _compute_factor_value(fid, hist)
+                if not np.isnan(val) and not np.isinf(val):
+                    factor_values[fid][symbol] = val
+            except Exception:
+                continue
+
+    for factor in alive:
+        fid = factor["id"]
+        values = factor_values.get(fid, {})
+        if not values:
+            continue
+        sorted_items = sorted(values.items(), key=lambda x: x[1], reverse=True)
+        total = len(sorted_items)
+        for rank, (symbol, val) in enumerate(sorted_items, 1):
+            if symbol not in scores:
+                continue
+            percentile = (total - rank + 1) / total
+            scores[symbol].factor_scores = scores[symbol].factor_scores or {}
+            scores[symbol].factor_scores[fid] = FactorScore(
+                symbol=symbol,
+                factor_id=fid,
+                value=val,
+                rank=rank,
+                percentile=percentile,
+            )
+
+    for symbol, score in scores.items():
+        if not score.factor_scores:
+            continue
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        for factor in alive:
+            fid = factor["id"]
+            weight = factor["weight"]
+            fs = score.factor_scores.get(fid)
+            if fs:
+                weighted_sum += fs.percentile * weight
+                weight_sum += weight
+        if weight_sum > 0:
+            score.composite_score = weighted_sum / weight_sum
+
+    filtered: list[StockScore] = []
+    for symbol, score in scores.items():
+        df = panel.get(symbol)
+        if df is None or df.empty:
+            continue
+        mask = df.index <= td_str
+        hist = df[mask]
+        if len(hist) < 60:
+            continue
+
+        score.ma5 = hist["close"].iloc[-5:].mean()
+        score.ma20 = hist["close"].iloc[-20:].mean()
+        score.ma60 = hist["close"].iloc[-60:].mean()
+        score.momentum_20d = (hist["close"].iloc[-1] / hist["close"].iloc[-20] - 1) * 100
+        score.volume_ratio = hist["volume"].iloc[-1] / hist["volume"].iloc[-20:].mean()
+
+        high_low = hist["high"] - hist["low"]
+        high_close = abs(hist["high"] - hist["close"].shift())
+        low_close = abs(hist["low"] - hist["close"].shift())
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        score.atr_14 = tr.iloc[-14:].mean()
+
+        score.passes_trend = score.ma5 > score.ma20 > score.ma60
+        score.passes_momentum = score.momentum_20d > 0
+        score.passes_volume = score.volume_ratio >= 1.0
+        score.passes_all = (
+            score.passes_trend
+            and score.passes_momentum
+            and score.passes_volume
+            and score.composite_score >= 0.5
+        )
+
+        if score.passes_all:
+            filtered.append(score)
+
+    filtered.sort(key=lambda x: x.composite_score, reverse=True)
+    for i, score in enumerate(filtered, 1):
+        score.composite_rank = i
+
+    return filtered[:top_n]
+
+
+def _multi_factor_selector(
+    *, trade_date: date, top_n: int, params: dict[str, Any]
+) -> list[StockScore]:
+    """Registry-compatible wrapper for ``MultiFactorSelector``."""
+    panel = params.get("_panel")
+    factor_weights = params.get("factor_weights") if isinstance(params.get("factor_weights"), dict) else None
+    if panel is not None:
+        return _multi_factor_from_panel(panel, trade_date, top_n, factor_weights)
+    selector = MultiFactorSelector()
+    return selector.select(trade_date=trade_date, top_n=top_n)
+
+
+def _register_multi_factor() -> None:
+    from src.ashare.strategies.selector_registry import register_selector
+    register_selector("multi_factor")(_multi_factor_selector)
+
+
+_register_multi_factor()
+del _register_multi_factor
 
 
 # Fallback universe: 50 most liquid A-share stocks

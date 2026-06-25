@@ -58,6 +58,9 @@ const DecisionTree = lazy(() =>
 const Strategy = lazy(() =>
   import("@/pages/ashare/StrategyPage").then((m) => ({ default: m.default })),
 );
+const StrategyCompare = lazy(() =>
+  import("@/pages/ashare/ComparePage").then((m) => ({ default: m.default })),
+);
 const StrategyMarket = lazy(() =>
   import("@/pages/ashare/StrategyMarketPage").then((m) => ({ default: m.default })),
 );
@@ -77,6 +80,7 @@ export const router = createBrowserRouter([
       { path: "/ashare/portfolio", element: wrap(Portfolio) },
       { path: "/ashare/report", element: wrap(Report) },
       { path: "/ashare/strategy", element: wrap(Strategy) },
+      { path: "/ashare/strategy/compare", element: wrap(StrategyCompare) },
       { path: "/ashare/strategy/market", element: wrap(StrategyMarket) },
       { path: "/decision-tree", element: wrap(DecisionTree) },
       { path: "/runs/:runId", element: wrap(RunDetail) },

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { TrendingUp, BarChart3, Activity, DollarSign, Percent, Clock, Target, Zap, LineChart, Search, Store } from "lucide-react";
 import * as echarts from "echarts";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,7 @@ const API_BASE = "";
 
 interface StockPick {
   symbol: string;
+  name: string;
   composite_score: number;
   momentum_20d: number;
   volume_ratio: number;
@@ -202,13 +203,21 @@ export default function StrategyPage() {
           title="A股量化策略"
           meta="多因子选股 + 自适应回测 + 个股画像"
         />
-        <button
-          onClick={() => navigate("/ashare/strategy/market")}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:bg-primary/90"
-        >
-          <Store className="h-4 w-4" />
-          进入策略市场
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to="/ashare/strategy/compare">
+            <button className="flex items-center gap-1.5 px-3 py-2 rounded-md border text-sm font-medium hover:bg-muted transition-colors">
+              <BarChart3 className="h-4 w-4" />
+              打开策略对比
+            </button>
+          </Link>
+          <button
+            onClick={() => navigate("/ashare/strategy/market")}
+            className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:bg-primary/90"
+          >
+            <Store className="h-4 w-4" />
+            进入策略市场
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -272,6 +281,7 @@ export default function StrategyPage() {
                   <thead className="bg-muted/50">
                     <tr>
                       <th className="px-3 py-2 text-left font-medium">代码</th>
+                      <th className="px-3 py-2 text-left font-medium">名称</th>
                       <th className="px-3 py-2 text-right font-medium">综合得分</th>
                       <th className="px-3 py-2 text-right font-medium">20日动量</th>
                       <th className="px-3 py-2 text-right font-medium">量比</th>
@@ -284,6 +294,7 @@ export default function StrategyPage() {
                     {selectResult.stocks.map((s: StockPick) => (
                       <tr key={s.symbol} className="border-b last:border-b-0 hover:bg-muted/30">
                         <td className="px-3 py-2 font-mono">{s.symbol}</td>
+                        <td className="px-3 py-2">{s.name || "—"}</td>
                         <td className="px-3 py-2 text-right font-semibold">{s.composite_score.toFixed(3)}</td>
                         <td className="px-3 py-2 text-right">{s.momentum_20d.toFixed(1)}%</td>
                         <td className="px-3 py-2 text-right">{s.volume_ratio.toFixed(2)}x</td>
