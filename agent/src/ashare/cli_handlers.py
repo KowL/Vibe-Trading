@@ -146,7 +146,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register the 'ashare' subcommand."""
-    ashare_parser = subparsers.add_parser("ashare", help="A-share market tools (limit-up, portfolio, reports)")
+    ashare_parser = subparsers.add_parser("ashare", help="A-share market tools (limit-up, portfolio, reports, signals)")
     ashare_subparsers = ashare_parser.add_subparsers(dest="ashare_command")
 
     # limit-up
@@ -170,6 +170,22 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     rp_parser.add_argument("--json", action="store_true", help="Output JSON")
 
 
+    # signals (signal delivery: list / test-push / audit / config)
+    from src.ashare.signals.cli_handlers import add_subparser as _add_signals_subparser
+    _add_signals_subparser(ashare_subparsers)
+
+
+def _coerce_exit_code(rc: Any) -> int:
+    """Coerce a handler return value into an integer exit code.
+
+    CLI handlers historically return ``int`` directly, but a few helper
+    functions may return ``None`` (e.g. argparse-driven error paths).
+    This helper normalises both into an int so the top-level
+    :func:`dispatch` never crashes on a stray ``None``.
+    """
+    return int(rc) if rc is not None else 0
+
+
 def dispatch(args: argparse.Namespace) -> int:
     """Dispatch ashare subcommands."""
     if args.ashare_command == "limit-up":
@@ -178,5 +194,8 @@ def dispatch(args: argparse.Namespace) -> int:
         return cmd_portfolio(args)
     if args.ashare_command == "report":
         return cmd_report(args)
+    if args.ashare_command == "signals":
+        from src.ashare.signals.cli_handlers import dispatch as _signals_dispatch
+        return _coerce_exit_code(_signals_dispatch(args))
     print("Error: ashare requires a subcommand. Try: vibe-trading ashare limit-up", file=sys.stderr)
     return 1
