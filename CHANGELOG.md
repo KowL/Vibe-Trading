@@ -23,6 +23,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   Both strategies expose their runs through the standard
   `engine.refresh(...)` path and feed the new signal delivery pipeline.
 
+- **A-share scheduler windows for user strategies.** Add two time windows
+  and matching jobs to `agent/src/ashare/scheduler.py`:
+  `my_multi_factor_eod` (16:30 daily) and `my_bollinger_scan`
+  (every 5 minutes during trading hours). Bollinger is intentionally
+  excluded from the daily lock list so it can run on the intraday cadence.
+
 
 ### Changed
 
