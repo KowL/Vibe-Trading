@@ -29,10 +29,13 @@ def _get_session_service():
     """Lazy-init session service when ENABLE_SESSION_RUNTIME=true."""
     global _session_service
 
-    host_val = _host_attr("_session_service", None)
-    if host_val is not None:
-        return host_val
-    if _session_service is not None:
+    import sys as _sys
+    _host = _sys.modules.get("api_server")
+    if _host is not None and hasattr(_host, "_session_service"):
+        host_val = getattr(_host, "_session_service")
+        if host_val is not None:
+            return host_val
+    elif _session_service is not None:
         return _session_service
 
     if os.getenv("ENABLE_SESSION_RUNTIME", "true").lower() != "true":
@@ -70,11 +73,13 @@ def _get_channel_runtime():
     """Lazy-init IM channel runtime without starting platform adapters."""
     global _channel_runtime, _channel_bus, _channel_manager
 
-    # Check api_server host module first (monkeypatch compatibility).
-    host_rt = _host_attr("_channel_runtime", None)
-    if host_rt is not None:
-        return host_rt
-    if _channel_runtime is not None:
+    import sys as _sys
+    _host = _sys.modules.get("api_server")
+    if _host is not None and hasattr(_host, "_channel_runtime"):
+        host_rt = getattr(_host, "_channel_runtime")
+        if host_rt is not None:
+            return host_rt
+    elif _channel_runtime is not None:
         return _channel_runtime
 
     from src.channels.bus.queue import MessageBus
