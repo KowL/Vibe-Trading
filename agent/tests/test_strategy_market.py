@@ -217,6 +217,7 @@ def test_engine_catalogue_excludes_hidden_strategies() -> None:
     ids = {d.id for d in engine.catalogue()}
     assert "my_multi_factor" not in ids
     assert "my_bollinger" not in ids
+    assert "stock_profile" not in ids
 
 
 @pytest.mark.asyncio
@@ -306,7 +307,9 @@ def test_selector_runner_returns_top_stocks(monkeypatch: Any) -> None:
     assert snapshot.status == "success"
     assert len(snapshot.matched) == 2
     assert snapshot.matched[0].symbol == "000001.SZ"
-    assert snapshot.matched[0].signal == "watch"
+    assert snapshot.matched[0].signal == "buy"  # score 0.8 + volume_ratio 1.5 触发买入阈值
+    assert snapshot.matched[1].symbol == "000002.SZ"
+    assert snapshot.matched[1].signal == "watch"  # score 0.6 未达买入阈值
 
 
 def test_timing_runner_generates_buy_signals(monkeypatch: Any) -> None:

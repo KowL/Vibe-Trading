@@ -25,17 +25,16 @@ agent/src/ashare/
 ├── live_publisher.py      # SSE 实时推送
 ├── models/                # 数据模型
 │   ├── limit_up.py
-│   ├── portfolio.py
-│   └── market_report.py
+│   └── portfolio.py
 ├── scheduler.py           # 定时任务调度器
 ├── storage/               # 文件系统存储
 │   ├── limit_up_store.py
-│   ├── portfolio_store.py
-│   └── report_store.py
+│   └── portfolio_store.py
 ├── tasks/                 # 定时任务
 │   ├── limit_up_sync.py
 │   ├── market_report.py
-│   └── portfolio_sync.py
+│   ├── report_llm.py
+│   └── report_prompts.py
 ├── trading/               # 实盘交易
 │   ├── __init__.py        # Mandate 配置
 │   └── mandate_tool.py    # 交易工具

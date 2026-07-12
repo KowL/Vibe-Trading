@@ -14,6 +14,22 @@ import httpx
 _ADSHARE_BASE = os.environ.get("ADSHARE_URL", "http://localhost:8000")
 
 
+def _fmt_date(d: date | str | int | None) -> int | None:
+    """Normalize a date input to YYYYMMDD integer as expected by adshare.
+
+    Accepts ``date`` objects, ISO strings (``YYYY-MM-DD``), or already
+    packed integers (``YYYYMMDD``). Returns ``None`` for ``None``.
+    """
+    if d is None:
+        return None
+    if isinstance(d, int):
+        return d
+    if isinstance(d, date):
+        return int(d.strftime("%Y%m%d"))
+    s = str(d).replace("-", "")
+    return int(s)
+
+
 class AdshareClient:
     """HTTP client for adshare data service."""
 
@@ -32,8 +48,9 @@ class AdshareClient:
             "board_filter": board_filter,
             "exclude_st": str(exclude_st).lower(),
         }
-        if trade_date is not None:
-            params["date"] = trade_date.isoformat()
+        packed = _fmt_date(trade_date)
+        if packed is not None:
+            params["date"] = packed
         r = self._client.get(f"{self.base_url}/market/limit-up", params=params)
         r.raise_for_status()
         return r.json()
@@ -52,16 +69,31 @@ class AdshareClient:
         r.raise_for_status()
         return r.json()
 
-    def get_kline(self, code: str, period: str = "daily", begin_date: str = "", end_date: str = "", limit: int = 60) -> dict[str, Any]:
-        """Fetch K-line data from adshare /market/kline."""
+    def get_kline(
+        self,
+        code: str,
+        period: str = "daily",
+        begin_date: date | str | int | None = None,
+        end_date: date | str | int | None = None,
+        limit: int | None = 60,
+    ) -> dict[str, Any]:
+        """Fetch K-line data from adshare /market/kline.
+
+        ``begin_date`` / ``end_date`` may be ``date`` objects, ISO strings
+        (``YYYY-MM-DD``), or packed integers (``YYYYMMDD``).
+        """
         params: dict[str, Any] = {
             "codes": code,
             "period": period,
         }
-        if begin_date:
-            params["begin_date"] = begin_date
-        if end_date:
-            params["end_date"] = end_date
+        packed_begin = _fmt_date(begin_date)
+        packed_end = _fmt_date(end_date)
+        if packed_begin is not None:
+            params["begin_date"] = packed_begin
+        if packed_end is not None:
+            params["end_date"] = packed_end
+        if limit is not None:
+            params["limit"] = limit
         r = self._client.get(f"{self.base_url}/market/kline", params=params)
         r.raise_for_status()
         return r.json()

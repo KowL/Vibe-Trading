@@ -33,6 +33,7 @@ from src.ashare.strategies.market_models import (
     MatchedSymbol,
     StrategyCategory,
     StrategyDefinition,
+    StrategyMetrics,
     StrategyRunRequest,
     StrategySnapshot,
 )
@@ -61,7 +62,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "min_volume_ratio": 0.8,     # 量比下限
     "min_history_bars": 60,      # 最小历史 K 线数
     "request_sleep": 0.05,       # adshare 限流间隔（秒）
-    "lookback_days": 90,         # 拉数据回看天数
+    "lookback_days": 120,        # 拉数据回看天数（覆盖节假日保证 ≥60 根有效 K 线）
 }
 
 
@@ -219,6 +220,8 @@ def run_myf(request: StrategyRunRequest) -> StrategySnapshot:
         return StrategySnapshot(
             strategy_id="my_multi_factor", run_at=datetime.now(),
             status="success", market_date=market_date, matched=[],
+            metrics=StrategyMetrics(),
+            metadata={"empty_reason": "watchlist_empty", "watchlist_path": str(Path(WATCHLIST_PATH).expanduser())},
         )
 
     client = AdshareClient()
@@ -254,6 +257,14 @@ def run_myf(request: StrategyRunRequest) -> StrategySnapshot:
         return StrategySnapshot(
             strategy_id="my_multi_factor", run_at=datetime.now(),
             status="success", market_date=market_date, matched=[],
+            metrics=StrategyMetrics(),
+            metadata={
+                "empty_reason": "no_symbols_passed_filters",
+                "watchlist_size": len(watchlist),
+                "market_date": market_date.isoformat(),
+                "begin_date": begin_date,
+                "end_date": end_date,
+            },
         )
 
     scored.sort(key=lambda t: t[1], reverse=True)

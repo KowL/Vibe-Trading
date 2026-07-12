@@ -40,6 +40,25 @@ from src.ashare.signals.sinks.base import SignalSink
 
 logger = logging.getLogger(__name__)
 
+
+def _load_symbol_name_map(base_url: str = "http://localhost:8000") -> dict[str, str]:
+    """Fetch stock code -> name mapping from adshare /market/stock/basic.
+
+    Falls back to an empty dict if adshare is unreachable so a missing
+    name does not break signal delivery.
+    """
+    try:
+        r = httpx.get(
+            f"{base_url.rstrip('/')}/market/stock/basic",
+            timeout=5.0,
+        )
+        r.raise_for_status()
+        data = r.json().get("data") or []
+        return {item.get("code", ""): (item.get("name") or "") for item in data if item.get("code")}
+    except Exception as exc:
+        logger.warning("Failed to load symbol name map from adshare: %s", exc)
+        return {}
+
 #: Per-provider sleep after a successful POST. 100ms keeps us under
 #: Bark's ~5/min steady state when one tick fires N signals in a row.
 #: SPEC §10.2 R5 mitigation.
@@ -63,6 +82,8 @@ class WebhookSink:
         self._providers: list[WebhookProviderConfig] = [
             p for p in providers if p.enabled
         ]
+        # Cache stock code -> name map for Feishu/Lark formatting.
+        self._symbol_names = _load_symbol_name_map()
 
     def name(self) -> str:
         return "webhook"
@@ -110,8 +131,7 @@ class WebhookSink:
             return False
         return True
 
-    @staticmethod
-    async def _send_one(provider: WebhookProviderConfig, signal: NormalizedSignal) -> None:
+    async def _send_one(self, provider: WebhookProviderConfig, signal: NormalizedSignal) -> None:
         """POST one signal to one provider.
 
         Body shape depends on the provider's URL pattern:
@@ -155,6 +175,25 @@ class WebhookSink:
             payload = {
                 "msgtype": "text",
                 "text": {"content": f"{title}\n{body}"},
+            }
+        elif "open.feishu.cn" in url:
+            # Feishu/Lark custom bot webhook
+            side_cn = {"buy": "买入", "sell": "卖出"}.get(
+                signal.side, signal.side
+            )
+            name = self._symbol_names.get(signal.symbol, "")
+            symbol_line = f"{name}（{signal.symbol}）" if name else signal.symbol
+            payload = {
+                "msg_type": "text",
+                "content": {
+                    "text": (
+                        f"【多因子策略】\n"
+                        f"  股票：{symbol_line}\n"
+                        f"  信号：{side_cn}\n"
+                        f"  参考价：{signal.ref_price} 元\n"
+                        f"  原因：{signal.reason or '策略触发'}"
+                    )
+                },
             }
         else:
             # Generic: full signal envelope as JSON.

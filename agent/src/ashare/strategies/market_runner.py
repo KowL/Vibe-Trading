@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -118,6 +118,76 @@ def _empty_snapshot(
     )
 
 
+def _build_action_suggestion(strategy_id: str, signal: str, metadata: dict[str, Any]) -> str:
+    """Generate a dynamic, strategy-aware action suggestion from matched metadata.
+
+    The suggestion combines the strategy logic with per-stock indicators so the
+    user gets actionable guidance rather than a static label.
+    """
+    score = float(metadata.get("score") or 0)
+    confidence = float(metadata.get("confidence") or 0)
+    momentum_20d = float(metadata.get("momentum_20d") or 0)
+    volume_ratio = float(metadata.get("volume_ratio") or 0)
+
+    if strategy_id == "local_selector":
+        if signal == "buy":
+            if score >= 0.9 and volume_ratio >= 2.0:
+                return "评分高且量能充沛，今日可作为买入候选，轻仓试探，跌破MA5止损"
+            if momentum_20d >= 20:
+                return "评分靠前且动量较强，今日可作为买入候选，回调至MA5附近低吸"
+            return "评分达到买入阈值，今日可作为买入候选，注意仓位控制"
+        if score >= 0.7:
+            return "综合评分良好，纳入观察池，放量突破后再考虑介入"
+        return "排名一般，建议观望"
+
+    if strategy_id == "trend_timing":
+        if score >= 0.9 and volume_ratio >= 2.0:
+            return "强势突破且明显放量，可追涨参与，仓位控制在较轻水平"
+        if score >= 0.8 and momentum_20d >= 15:
+            return "趋势较强，建议逢低布局，止损设在MA20下方"
+        if score >= 0.7:
+            return "趋势信号成立，可小仓位试盘，跌破MA20离场"
+        return "趋势较弱，建议等待更明确信号"
+
+    if strategy_id == "bollinger_band":
+        upper = float(metadata.get("upper") or 0)
+        lower = float(metadata.get("lower") or 0)
+        close = float(metadata.get("close") or 0)
+        if signal == "buy" and upper > lower > 0:
+            pct = (close - lower) / (upper - lower)
+            if close <= lower * 0.98:
+                return "价格显著跌破下轨，超卖明显，关注反弹机会，止损设在下轨下方"
+            if pct <= 0.1:
+                return "价格触及下轨，可轻仓低吸，目标看向中轨"
+            return "价格接近下轨，关注支撑位是否有效"
+        if signal == "sell" and upper > lower > 0:
+            pct = (close - lower) / (upper - lower)
+            if close >= upper * 1.02:
+                return "价格显著突破上轨，超买明显，建议减仓止盈"
+            if pct >= 0.9:
+                return "价格触及上轨，建议考虑止盈或减仓"
+            return "价格接近上轨，关注压力位表现"
+        return "价格在布林带中轨附近，观望为主"
+
+    if strategy_id == "adaptive_personality":
+        if signal == "buy":
+            if score and score >= 50 and volume_ratio >= 2.0:
+                return "自适应选股评分高且量能充沛，今日可作为买入候选，按股性设置止损"
+            if momentum_20d >= 20:
+                return "动量较强且通过自适应过滤，今日可作为买入候选，注意仓位控制"
+            return "通过自适应选股过滤，今日可作为买入候选，结合大盘环境决策"
+        return "建议观望"
+
+    # Fallback generic suggestion based on signal
+    if signal == "buy":
+        return "触发买入信号，建议结合仓位管理参与"
+    if signal == "sell":
+        return "触发卖出信号，建议止盈或减仓"
+    if signal == "hold":
+        return "建议继续持有，关注止损止盈位"
+    return "建议纳入观察，等待更明确信号"
+
+
 # --------------------------------------------------------------------------- #
 # Runner: multi-factor selector
 # --------------------------------------------------------------------------- #
@@ -133,24 +203,39 @@ def _run_selector(request: StrategyRunRequest) -> StrategySnapshot:
             universe=_universe_param(request.params) or ["all_a"],
             top_n=top_n,
         )
-        matched = [
-            MatchedSymbol(
-                symbol=s.symbol,
-                name=s.name or get_stock_name(s.symbol),
-                signal="watch",
-                score=round(s.composite_score, 4) if s.composite_score else None,
-                confidence=round(min(0.99, s.composite_score or 0.0), 4),
-                rank=idx,
-                metadata={
-                    "momentum_20d": round(s.momentum_20d, 2),
-                    "volume_ratio": round(s.volume_ratio, 2),
-                    "ma5": round(float(s.ma5), 2),
-                    "ma20": round(float(s.ma20), 2),
-                    "ma60": round(float(s.ma60), 2),
-                },
+        matched = []
+        for idx, s in enumerate(pool, start=1):
+            score = round(s.composite_score, 4) if s.composite_score else None
+            confidence = round(min(0.99, s.composite_score or 0.0), 4)
+            momentum_20d = round(s.momentum_20d, 2)
+            volume_ratio = round(s.volume_ratio, 2)
+            # High-score + volume-confirmed candidates are treated as actionable buy signals
+            signal: Literal["buy", "watch"] = (
+                "buy" if (score or 0) >= 0.8 and volume_ratio >= 1.5 else "watch"
             )
-            for idx, s in enumerate(pool, start=1)
-        ]
+            meta = {
+                "score": score,
+                "confidence": confidence,
+                "momentum_20d": momentum_20d,
+                "volume_ratio": volume_ratio,
+                "ma5": round(float(s.ma5), 2),
+                "ma20": round(float(s.ma20), 2),
+                "ma60": round(float(s.ma60), 2),
+            }
+            meta["action_suggestion"] = _build_action_suggestion(
+                "local_selector", signal, meta
+            )
+            matched.append(
+                MatchedSymbol(
+                    symbol=s.symbol,
+                    name=s.name or get_stock_name(s.symbol),
+                    signal=signal,
+                    score=score,
+                    confidence=confidence,
+                    rank=idx,
+                    metadata=meta,
+                )
+            )
 
         metrics: StrategyMetrics | None = None
         curve: list[dict[str, Any]] | None = None
@@ -203,21 +288,29 @@ def _run_timing(request: StrategyRunRequest) -> StrategySnapshot:
         )
         matched: list[MatchedSymbol] = []
         for idx, s in enumerate(pool, start=1):
+            score = round(s.composite_score, 4)
+            confidence = round(min(0.99, s.composite_score), 4)
+            meta = {
+                "score": score,
+                "confidence": confidence,
+                "momentum_20d": round(s.momentum_20d, 2),
+                "volume_ratio": round(s.volume_ratio, 2),
+                "ma5": round(float(s.ma5), 2),
+                "ma20": round(float(s.ma20), 2),
+                "ma60": round(float(s.ma60), 2),
+            }
+            meta["action_suggestion"] = _build_action_suggestion(
+                "trend_timing", "buy", meta
+            )
             matched.append(
                 MatchedSymbol(
                     symbol=s.symbol,
                     name=s.name or get_stock_name(s.symbol),
                     signal="buy",
-                    score=round(s.composite_score, 4),
-                    confidence=round(min(0.99, s.composite_score), 4),
+                    score=score,
+                    confidence=confidence,
                     rank=idx,
-                    metadata={
-                        "momentum_20d": round(s.momentum_20d, 2),
-                        "volume_ratio": round(s.volume_ratio, 2),
-                        "ma5": round(float(s.ma5), 2),
-                        "ma20": round(float(s.ma20), 2),
-                        "ma60": round(float(s.ma60), 2),
-                    },
+                    metadata=meta,
                 )
             )
 
@@ -301,20 +394,28 @@ def _run_band(request: StrategyRunRequest) -> StrategySnapshot:
 
             # Only surface actionable signals to keep the UI focused
             if signal in ("buy", "sell"):
+                score = round(s.composite_score, 4)
+                confidence = round(min(0.99, abs(last - ma) / (std + 1e-9) / width), 4)
+                meta = {
+                    "score": score,
+                    "confidence": confidence,
+                    "ma20": round(float(ma), 2),
+                    "upper": round(float(upper), 2),
+                    "lower": round(float(lower), 2),
+                    "close": round(float(last), 2),
+                }
+                meta["action_suggestion"] = _build_action_suggestion(
+                    "bollinger_band", signal, meta
+                )
                 matched.append(
                     MatchedSymbol(
                         symbol=s.symbol,
                         name=s.name or get_stock_name(s.symbol),
                         signal=signal,
-                        score=round(s.composite_score, 4),
-                        confidence=round(min(0.99, abs(last - ma) / (std + 1e-9) / width), 4),
+                        score=score,
+                        confidence=confidence,
                         rank=idx,
-                        metadata={
-                            "ma20": round(float(ma), 2),
-                            "upper": round(float(upper), 2),
-                            "lower": round(float(lower), 2),
-                            "close": round(float(last), 2),
-                        },
+                        metadata=meta,
                     )
                 )
 
@@ -350,34 +451,36 @@ def _run_adaptive(request: StrategyRunRequest) -> StrategySnapshot:
             max_positions=_int_param(request.params, "max_positions", 10),
         )
 
-        # Current "holdings" as matched symbols
+        # Today's buy candidates from adaptive selection
         matched: list[MatchedSymbol] = []
-        if result.trades:
-            # Find latest open buy that has not been closed
-            open_positions: dict[str, dict[str, Any]] = {}
-            for t in result.trades:
-                if t["action"] == "buy":
-                    open_positions[t["symbol"]] = t
-                elif t["action"] == "sell" and t["symbol"] in open_positions:
-                    del open_positions[t["symbol"]]
-            for sym, t in open_positions.items():
-                matched.append(
-                    MatchedSymbol(
-                        symbol=sym,
-                        name=get_stock_name(sym),
-                        signal="hold",
-                        score=None,
-                        confidence=0.8,
-                        rank=None,
-                        metadata={
-                            "entry_date": t.get("date"),
-                            "entry_price": round(t.get("price", 0), 2),
-                            "quantity": t.get("quantity"),
-                            "stop_loss": round(t.get("stop_loss", 0), 2),
-                            "take_profit": round(t.get("take_profit", 0), 2),
-                        },
-                    )
+        candidates = bt._select_stocks(market_date, top_n)
+        for idx, c in enumerate(candidates, start=1):
+            score = c.get("score")
+            score_val = round(float(score), 4) if score is not None else None
+            confidence = round(min(0.99, abs(float(score)) / 100.0 if score else 0.0), 4)
+            momentum_20d = round(float(c.get("momentum_20d", 0)), 2)
+            volume_ratio = round(float(c.get("volume_ratio", 0)), 2)
+            meta: dict[str, Any] = {
+                "score": score_val,
+                "confidence": confidence,
+                "momentum_20d": momentum_20d,
+                "volume_ratio": volume_ratio,
+                "ma5": round(float(c.get("ma5", 0)), 2),
+            }
+            meta["action_suggestion"] = _build_action_suggestion(
+                "adaptive_personality", "buy", meta
+            )
+            matched.append(
+                MatchedSymbol(
+                    symbol=c["symbol"],
+                    name=get_stock_name(c["symbol"]),
+                    signal="buy",
+                    score=score_val,
+                    confidence=confidence,
+                    rank=idx,
+                    metadata=meta,
                 )
+            )
 
         curve = [
             {
@@ -576,6 +679,7 @@ PROFILE_DEF = StrategyDefinition(
         ),
     ],
     supports_backtest=False,
+    market_visible=False,  # 需要用户输入指定 symbol，不适合策略市场批量刷新
 )
 
 register_strategy(SELECTOR_DEF)(_run_selector)
