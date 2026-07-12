@@ -31,7 +31,7 @@ async function errorFromResponse(res: Response): Promise<ApiError> {
   return new ApiError(detail, res.status);
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+export async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const { headers, ...rest } = options ?? {};
   const mergedHeaders: Record<string, string> = { "Content-Type": "application/json", ...authHeaders() };
   if (headers) {
@@ -217,10 +217,30 @@ export const api = {
       body: JSON.stringify({ broker }),
     }),
   stopLiveRunner: (broker: string) =>
-    request<LiveRunnerResponse>("/live/runner/stop", {
+    request<LiveRunnerResponse>(`/live/runner/stop`, {
       method: "POST",
       body: JSON.stringify({ broker }),
     }),
+
+  // Strategy mining API
+  listStrategyArtifacts: () => request<StrategyArtifactSummary[]>("/ashare/strategy-mining/list"),
+  getStrategyArtifact: (id: string, kind: "config" | "report" | "search" | "race" = "report") =>
+    request<Record<string, unknown>>(`/ashare/strategy-mining/artifact/${id}?kind=${kind}`),
+  getStrategyEquity: (id: string) =>
+    request<{ equity_curve: Array<{ date: string; equity: number }> }>(`/ashare/strategy-mining/artifact/${id}/equity`),
+
+  // A-share API (ported from Ruo.ai)
+  listLimitUp: (tradeDate: string) => request<LimitUpRecord[]>(`/ashare/limit-up/${tradeDate}`),
+  syncLimitUp: (tradeDate?: string) => request<LimitUpSyncResult>(`/ashare/limit-up/sync${tradeDate ? `?trade_date=${tradeDate}` : ""}`, { method: "POST" }),
+  listPortfolios: () => request<Portfolio[]>("/ashare/portfolios"),
+  createPortfolio: (body: { name: string; initial_cash: number }) => request<Portfolio>("/ashare/portfolios", { method: "POST", body: JSON.stringify(body) }),
+  getPortfolio: (id: string) => request<Portfolio>(`/ashare/portfolios/${id}`),
+  listTrades: (portfolioId: string) => request<Trade[]>(`/ashare/portfolios/${portfolioId}/trades`),
+  recordTrade: (portfolioId: string, body: { symbol: string; side: string; quantity: number; price: number; fee?: number }) =>
+    request<Trade>(`/ashare/portfolios/${portfolioId}/trades`, { method: "POST", body: JSON.stringify(body) }),
+  generateReport: (kind: string, tradeDate?: string) => request<Report>(`/ashare/reports/${kind}${tradeDate ? `?trade_date=${tradeDate}` : ""}`, { method: "POST" }),
+  getReport: (kind: string, tradeDate: string) => request<Report>(`/ashare/reports/${kind}/${tradeDate}`),
+  ashareSseUrl: () => withAuthQuery(`${BASE}/ashare/events`),
 };
 
 // --- Swarm types ---
@@ -971,4 +991,84 @@ export interface MessageItem {
   created_at: string;
   linked_attempt_id?: string;
   metadata?: Record<string, unknown>;
+}
+
+// --- Strategy mining types ---
+
+export interface StrategyArtifactSummary {
+  id: string;
+  created_at: string;
+  params: Record<string, unknown>;
+  metrics: Record<string, number>;
+  selected_alphas: string[];
+  hypothesis_id: string;
+  has_report: boolean;
+  has_search: boolean;
+  has_race: boolean;
+}
+
+// --- A-share types (ported from Ruo.ai) ---
+
+export interface LimitUpRecord {
+  trade_date: string;
+  symbol: string;
+  name: string;
+  limit_up_count: number;
+  limit_up_price: number;
+  open_price: number;
+  close_price: number;
+  high_price: number;
+  low_price: number;
+  prev_close: number;
+  change_pct: number;
+  turnover_amount: number;
+  turnover_volume: number;
+  turnover_ratio: number;
+  seal_amount: number | null;
+  seal_ratio: number | null;
+  first_time: string | null;
+  last_time: string | null;
+  open_count: number | null;
+  industry: string | null;
+  concept: string | null;
+  reason: string | null;
+  is_sealed: boolean;
+}
+
+export interface LimitUpSyncResult {
+  trade_date: string;
+  count: number;
+  source: string;
+  errors: string[];
+}
+
+export interface Portfolio {
+  portfolio_id: string;
+  name: string;
+  initial_cash: number;
+  cash: number;
+  market_value: number;
+  total_value: number;
+  total_pnl: number;
+  total_return_pct: number;
+}
+
+export interface Trade {
+  trade_id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  price: number;
+  amount: number;
+  status: string;
+  pnl: number;
+}
+
+export interface Report {
+  kind: string;
+  trade_date: string;
+  title: string;
+  markdown: string;
+  metrics: Record<string, unknown>;
+  created_at: string;
 }

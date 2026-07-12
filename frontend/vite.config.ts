@@ -14,6 +14,7 @@ const PROXY_PATHS = [
   "/live",
   "/upload",
   "/shadow-reports",
+  "/ashare",
 ];
 
 export default defineConfig(({ mode }) => {
@@ -45,6 +46,8 @@ export default defineConfig(({ mode }) => {
         "^/runs/[^/]+/?$": apiProxyWithHtmlFallback,
         "/runs": apiProxy,
         "/correlation": apiProxyWithHtmlFallback,
+        "/ashare": apiProxyWithHtmlFallback,
+        "/decision-tree": apiProxyWithHtmlFallback,
         "^/alpha(?:/|$)": apiProxy,
       },
     },

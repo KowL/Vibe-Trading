@@ -100,12 +100,13 @@ from src.api.state import (  # noqa: F401, E402
     _channel_manager,
     _channel_runtime,
     _get_channel_runtime,
-    _get_session_service,
-    _session_service,
 )
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+# A-share scheduler singleton (started on startup, stopped on shutdown)
+_ashare_scheduler = None
 
 # ============================================================================
 # FastAPI Application
@@ -133,6 +134,15 @@ app.add_middleware(
 app.middleware("http")(_reject_untrusted_loopback_host)
 app.middleware("http")(_spa_html_deep_link_fallback)
 
+# A-share extension (ported from Ruo.ai)
+from src.ashare.api import router as ashare_router
+from src.decision_tree import router as decision_tree_router
+from src.strategy_mining import api as strategy_mining_api
+
+app.include_router(ashare_router)
+app.include_router(decision_tree_router)
+app.include_router(strategy_mining_api.router)
+
 # ============================================================================
 # Lifecycle hooks
 # ============================================================================
@@ -159,12 +169,75 @@ async def _run_startup_preflight() -> None:
     if get_env_config().agent_tuning.vibe_trading_channels_auto_start:
         await _start_channel_runtime()
 
+    # Start A-share scheduled tasks (ported from Ruo.ai)
+    from src.ashare.scheduler import AShareScheduler
+
+    global _ashare_scheduler
+    _ashare_scheduler = AShareScheduler()
+    _ashare_scheduler.start()
+
 
 @app.on_event("shutdown")
 async def _stop_scheduled_research_on_shutdown() -> None:
     """Stop the scheduled research executor on server shutdown."""
     await _stop_channel_runtime()
     await _stop_scheduled_research_executor()
+
+    global _ashare_scheduler
+    if _ashare_scheduler is not None:
+        await _ashare_scheduler.stop()
+
+
+# ============================================================================
+# Shared service factory (exposed to route modules via api_server host)
+# ============================================================================
+
+_ashare_session_service = None
+_session_service = None
+
+
+def _get_session_service():
+    """Lazy-init session service when ENABLE_SESSION_RUNTIME=true."""
+    global _ashare_session_service, _session_service
+    if _ashare_session_service is not None:
+        return _ashare_session_service
+
+    if os.getenv("ENABLE_SESSION_RUNTIME", "true").lower() != "true":
+        return None
+
+    import asyncio
+    from src.session.store import SessionStore
+    from src.session.events import EventBus
+    from src.session.service import SessionService
+
+    store = SessionStore(base_dir=SESSIONS_DIR)
+    event_bus = EventBus()
+
+    try:
+        loop = asyncio.get_event_loop()
+        event_bus.set_loop(loop)
+    except RuntimeError:
+        pass
+
+    # Wire A-share live publisher to the session event bus
+    from src.ashare.live_publisher import get_publisher, set_publisher
+    pub = get_publisher()
+    pub.set_event_bus(event_bus)
+    set_publisher(pub)
+
+    # Wire strategy market engine to the publisher for SSE updates
+    from src.ashare.strategies.market_engine import get_market_engine
+    engine = get_market_engine()
+    engine.set_publisher(pub)
+
+    _ashare_session_service = SessionService(
+        store=store,
+        event_bus=event_bus,
+        runs_dir=RUNS_DIR,
+    )
+    # Keep the legacy name in sync for tests / re-exports.
+    _session_service = _ashare_session_service
+    return _ashare_session_service
 
 
 # ============================================================================
@@ -266,7 +339,11 @@ from src.api.live_routes import (  # noqa: F401, E402
 
 # --- Alpha Zoo ---
 from src.api.alpha_routes import register_alpha_routes  # noqa: E402
-register_alpha_routes(app)
+register_alpha_routes(
+    app,
+    require_auth=require_auth,
+    require_event_stream_auth=require_event_stream_auth,
+)
 
 
 # ============================================================================

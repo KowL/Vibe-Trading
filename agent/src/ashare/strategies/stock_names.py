@@ -1,0 +1,304 @@
+"""Lightweight stock-name resolver with fallback cache.
+
+Tries tushare/adshare stock_basic endpoint first, then falls back to the local
+``meta/codes.parquet`` shipped with the adshare dataset, then to an optional
+user-supplied names file (``STOCK_NAMES_PATH``), and finally to a small
+hard-coded map so local development still shows names when everything else is
+offline.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# A valid stock-basic list should contain names for the vast majority of
+# listed stocks. Anything smaller is treated as a partial/broken response and
+# we fall back to the next source.
+_MIN_VALID_NAMES = 1000
+
+
+# Fallback names for the default liquid universe used by local_select.
+_FALLBACK_NAMES: dict[str, str] = {
+    "000001.SZ": "平安银行",
+    "000002.SZ": "万科A",
+    "000063.SZ": "中兴通讯",
+    "000100.SZ": "TCL科技",
+    "000333.SZ": "美的集团",
+    "000538.SZ": "云南白药",
+    "000568.SZ": "泸州老窖",
+    "000651.SZ": "格力电器",
+    "000725.SZ": "京东方A",
+    "000768.SZ": "中航西飞",
+    "000858.SZ": "五粮液",
+    "000895.SZ": "双汇发展",
+    "002001.SZ": "新和成",
+    "002007.SZ": "华兰生物",
+    "002024.SZ": "苏宁易购",
+    "002027.SZ": "分众传媒",
+    "002142.SZ": "宁波银行",
+    "002230.SZ": "科大讯飞",
+    "002236.SZ": "大华股份",
+    "002415.SZ": "海康威视",
+    "002460.SZ": "赣锋锂业",
+    "002475.SZ": "立讯精密",
+    "002594.SZ": "比亚迪",
+    "002714.SZ": "牧原股份",
+    "300014.SZ": "亿纬锂能",
+    "300015.SZ": "爱尔眼科",
+    "300033.SZ": "同花顺",
+    "300059.SZ": "东方财富",
+    "300122.SZ": "智飞生物",
+    "300124.SZ": "汇川技术",
+    "300274.SZ": "阳光电源",
+    "300408.SZ": "三环集团",
+    "300433.SZ": "蓝思科技",
+    "300750.SZ": "宁德时代",
+    "600000.SH": "浦发银行",
+    "600009.SH": "上海机场",
+    "600016.SH": "民生银行",
+    "600028.SH": "中国石化",
+    "600030.SH": "中信证券",
+    "600031.SH": "三一重工",
+    "600036.SH": "招商银行",
+    "600048.SH": "保利发展",
+    "600104.SH": "上汽集团",
+    "600196.SH": "复星医药",
+    "600276.SH": "恒瑞医药",
+    "600309.SH": "万华化学",
+    "600406.SH": "国电南瑞",
+    "600436.SH": "片仔癀",
+    "600519.SH": "贵州茅台",
+    "600585.SH": "海螺水泥",
+    "600690.SH": "海尔智家",
+    "600703.SH": "三安光电",
+    "600745.SH": "闻泰科技",
+    "600809.SH": "山西汾酒",
+    "600837.SH": "海通证券",
+    "600887.SH": "伊利股份",
+    "600900.SH": "长江电力",
+    "601012.SH": "隆基绿能",
+    "601066.SH": "中信建投",
+    "601088.SH": "中国神华",
+    "601166.SH": "兴业银行",
+    "601211.SH": "国泰君安",
+    "601318.SH": "中国平安",
+    "601336.SH": "新华保险",
+    "601398.SH": "工商银行",
+    "601601.SH": "中国太保",
+    "601628.SH": "中国人寿",
+    "601668.SH": "中国建筑",
+    "601688.SH": "华泰证券",
+    "601766.SH": "中国中车",
+    "601857.SH": "中国石油",
+    "601888.SH": "中国中免",
+    "601899.SH": "紫金矿业",
+    "601919.SH": "中远海控",
+    "601995.SH": "中金公司",
+    "603259.SH": "药明康德",
+    "603288.SH": "海天味业",
+    "603501.SH": "韦尔股份",
+    "603986.SH": "兆易创新",
+    "605117.SH": "德业股份",
+    "688111.SH": "金山办公",
+    "688981.SH": "中芯国际",
+}
+
+
+def _detect_data_root() -> Path:
+    """Auto-detect adshare data directory."""
+    for env_var in ("ADSHARE_DATA_PATH", "ASHARE_DATA_PATH"):
+        env_path = os.environ.get(env_var)
+        if env_path:
+            return Path(env_path)
+    candidates = [
+        "/Volumes/mm/project/adshare/data",
+        "/Users/lijun/project/adshare/data",
+        "/Users/lijun/adshare/data",
+        "/app/adshare/data",
+    ]
+    for c in candidates:
+        p = Path(c)
+        if p.exists():
+            return p
+    return Path("/app/adshare/data")
+
+
+def _clean_names(raw: dict[str, Any]) -> dict[str, str]:
+    """Return a map of symbol -> non-empty name, discarding blanks."""
+    return {
+        str(code).strip(): str(name).strip()
+        for code, name in raw.items()
+        if str(code).strip() and str(name).strip()
+    }
+
+
+def _load_from_codes_parquet() -> dict[str, str] | None:
+    """Load symbol -> name from adshare meta/codes.parquet if available."""
+    try:
+        import duckdb
+
+        root = _detect_data_root()
+        path = root / "meta" / "codes.parquet"
+        if not path.exists():
+            return None
+
+        con = duckdb.connect(database=":memory:")
+        df = con.execute(
+            f"SELECT code, name FROM read_parquet('{path}') WHERE code IS NOT NULL"
+        ).fetchdf()
+        names = _clean_names(
+            {
+                str(row["code"]).strip(): str(row["name"]).strip()
+                for _, row in df.iterrows()
+            }
+        )
+        if len(names) > 100:
+            logger.info("loaded %d stock names from %s", len(names), path)
+            return names
+    except Exception as exc:
+        logger.debug("codes.parquet name load failed: %s", exc)
+    return None
+
+
+def _load_from_env_file() -> dict[str, str] | None:
+    """Load symbol -> name from ``STOCK_NAMES_PATH`` if set.
+
+    Supports JSON ({"000001.SZ": "平安银行", ...}), CSV with ``code,name``
+    columns, or parquet with ``code`` and ``name`` columns.
+    """
+    path_str = os.environ.get("STOCK_NAMES_PATH")
+    if not path_str:
+        return None
+
+    path = Path(path_str)
+    if not path.exists():
+        logger.warning("STOCK_NAMES_PATH set but file not found: %s", path)
+        return None
+
+    try:
+        suffix = path.suffix.lower()
+        if suffix == ".json":
+            import json
+
+            with path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                names = _clean_names(data)
+            elif isinstance(data, list):
+                names = _clean_names(
+                    {
+                        str(item.get("code") or item.get("ts_code") or item.get("symbol")): str(item.get("name", ""))
+                        for item in data
+                    }
+                )
+            else:
+                return None
+        elif suffix == ".csv":
+            import csv
+
+            names: dict[str, str] = {}
+            with path.open("r", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    code = (row.get("code") or row.get("ts_code") or row.get("symbol") or "").strip()
+                    name = (row.get("name") or "").strip()
+                    if code and name:
+                        names[code] = name
+        elif suffix == ".parquet":
+            import duckdb
+
+            con = duckdb.connect(database=":memory:")
+            df = con.execute(
+                f"SELECT code, name FROM read_parquet('{path}') WHERE code IS NOT NULL"
+            ).fetchdf()
+            names = _clean_names(
+                {
+                    str(row["code"]).strip(): str(row["name"]).strip()
+                    for _, row in df.iterrows()
+                }
+            )
+        else:
+            logger.warning("unsupported STOCK_NAMES_PATH extension: %s", suffix)
+            return None
+
+        if len(names) > 100:
+            logger.info("loaded %d stock names from %s", len(names), path)
+            return names
+    except Exception as exc:
+        logger.warning("failed to load STOCK_NAMES_PATH %s: %s", path, exc)
+    return None
+
+
+@lru_cache(maxsize=1)
+def _load_name_map() -> dict[str, str]:
+    """Load symbol -> name map from tushare/adshare, with fallback."""
+    try:
+        from src.ashare.tushare_client import TushareClient
+
+        client = TushareClient()
+        resp = client.get_stock_basic()
+        if resp and "data" in resp:
+            data = resp["data"]
+            names = _clean_names(
+                {
+                    item.get("code", ""): item.get("name", "")
+                    for item in data
+                    if item.get("code")
+                }
+            )
+            if len(names) >= _MIN_VALID_NAMES:
+                logger.info("loaded %d stock names from tushare/adshare", len(names))
+                return names
+            logger.warning(
+                "tushare/adshare stock_basic returned only %d valid names "
+                "(expected >= %d); trying fallback sources",
+                len(names),
+                _MIN_VALID_NAMES,
+            )
+    except Exception as exc:
+        logger.debug("tushare stock_basic failed, trying fallback sources: %s", exc)
+
+    parquet_names = _load_from_codes_parquet()
+    if parquet_names and len(parquet_names) >= _MIN_VALID_NAMES:
+        return parquet_names
+
+    env_names = _load_from_env_file()
+    if env_names and len(env_names) >= _MIN_VALID_NAMES:
+        return env_names
+
+    if parquet_names:
+        logger.warning(
+            "codes.parquet only contained %d names; using hard-coded fallback for known symbols",
+            len(parquet_names),
+        )
+        # Merge so hard-coded names fill gaps if parquet is partial.
+        return {**_FALLBACK_NAMES, **parquet_names}
+
+    if env_names:
+        logger.warning(
+            "STOCK_NAMES_PATH only contained %d names; using hard-coded fallback for known symbols",
+            len(env_names),
+        )
+        return {**_FALLBACK_NAMES, **env_names}
+
+    logger.warning(
+        "no valid stock-name source available; strategy market will show names only for the %d hard-coded symbols",
+        len(_FALLBACK_NAMES),
+    )
+    return _FALLBACK_NAMES.copy()
+
+
+def get_stock_name(symbol: str) -> str:
+    """Return the Chinese name for a symbol, or empty string if unknown."""
+    return _load_name_map().get(symbol, "")
+
+
+def reset_stock_name_cache() -> None:
+    """Clear the cached name map (useful in tests)."""
+    _load_name_map.cache_clear()

@@ -20,6 +20,7 @@ from src.factors.base import (
     delta,
     rank,
     safe_div,
+    safe_signed_power,
     scale,
     signed_power,
     ts_argmax,
@@ -56,13 +57,11 @@ def compute(panel: dict) -> pd.DataFrame:
     close = panel["close"]
     vwap = panel["vwap"]
 
-
     # Helper aliases (local closures keep the file standalone & purity-safe).
     base = ts_rank(vwap - ts_max(vwap, 15), 21)
     exponent_df = delta(close, 5)
-    base_arr = base.to_numpy(dtype=np.float64, na_value=np.nan)
-    exp_arr = exponent_df.to_numpy(dtype=np.float64, na_value=np.nan)
-    out_arr = np.sign(base_arr) * np.power(np.abs(base_arr), exp_arr)
-    out_arr = np.where(np.isfinite(out_arr), out_arr, np.nan)
-    out = pd.DataFrame(out_arr, index=close.index, columns=close.columns)
-    return out
+
+    # safe_signed_power avoids overflow when delta(close,5) is a large absolute
+    # price move (common for high-priced CN stocks).  The result is capped to a
+    # finite range while preserving sign and monotonicity for moderate values.
+    return safe_signed_power(base, exponent_df)

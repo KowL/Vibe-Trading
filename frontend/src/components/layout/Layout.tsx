@@ -1,16 +1,51 @@
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router-dom";
-import { Activity, BarChart3, Bot, Check, ChevronDown, FileText, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2 } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  Bot,
+  Check,
+  ChevronDown,
+  FileText,
+  Flame,
+  GitBranch,
+  Languages,
+  Layers,
+  Loader2,
+  MessageSquare,
+  Moon,
+  Newspaper,
+  Pencil,
+  Plus,
+  Settings,
+  Store,
+  Sun,
+  Trash2,
+  TrendingUp,
+  Wallet,
+  ChevronsLeft,
+  ChevronsRight,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
 import { useAgentStore } from "@/stores/agent";
 import { ConnectionBanner } from "@/components/layout/ConnectionBanner";
+import { NavGroup } from "@/components/layout/NavGroup";
 import { SUPPORTED_LANGUAGES } from "@/i18n";
 
 // APP_VERSION is sourced from i18n locale files (app.version key) to keep a
 // single source of truth across the footer and every localised README.
+
+const A_SHARE_CHILDREN = [
+  { to: "/ashare/limit-up", label: "涨停梯队", icon: Flame },
+  { to: "/ashare/portfolio", label: "模拟持仓", icon: Wallet },
+  { to: "/ashare/report", label: "市场报告", icon: Newspaper },
+  { to: "/ashare/strategy", label: "量化策略", icon: TrendingUp },
+  { to: "/ashare/strategy/mining", label: "策略挖掘", icon: BarChart3 },
+  { to: "/ashare/strategy/market", label: "策略市场", icon: Store },
+];
 
 export function Layout() {
   const { t } = useTranslation();
@@ -21,6 +56,7 @@ export function Layout() {
     { to: "/runtime", icon: Activity, label: t('layout.runtime') },
     { to: "/reports", icon: FileText, label: t('layout.reports') },
     { to: "/alpha-zoo", icon: Layers, label: t('layout.alphaZoo') },
+    { to: "/decision-tree", icon: GitBranch, label: "决策树" },
     { to: "/settings", icon: Settings, label: t('layout.settings') },
     { to: "/correlation", icon: BarChart3, label: t('layout.correlation') },
   ];
@@ -110,6 +146,17 @@ export function Layout() {
               </Link>
             );
           })}
+          <NavGroup
+            to="/ashare"
+            icon={TrendingUp}
+            label="A股"
+            pathname={pathname}
+            collapsed={collapsed}
+            storageKey="qa-ashare-menu"
+            defaultOpen={pathname.startsWith("/ashare")}
+          >
+            {A_SHARE_CHILDREN}
+          </NavGroup>
         </nav>
 
         {/* Sessions — hidden when collapsed */}

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.vibetrading.backend</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd &quot;${PROJECT_ROOT}&quot; &amp;&amp; source .venv/bin/activate &amp;&amp; set -a &amp;&amp; source agent/.env &amp;&amp; set +a &amp;&amp; exec vibe-trading serve --host 0.0.0.0 --port 8899</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${PROJECT_ROOT}/.local/logs/backend.log</string>
+    <key>StandardErrorPath</key>
+    <string>${PROJECT_ROOT}/.local/logs/backend.log</string>
+    <key>WorkingDirectory</key>
+    <string>${PROJECT_ROOT}</string>
+</dict>
+</plist>

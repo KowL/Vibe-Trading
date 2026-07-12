@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'">
+<title>Alpha Bench Report</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 2em;
+       color: #222; background: #fafafa; }
+h1, h2 { color: #111; }
+table { border-collapse: collapse; width: 100%; background: #fff; }
+th, td { padding: .5em .75em; border-bottom: 1px solid #e5e5e5; text-align: left; }
+th { background: #f0f0f0; }
+.meta { color: #666; font-size: .9em; margin-bottom: 1.5em; }
+.formula { font-family: monospace; background: #f4f4f4; padding: .25em .5em; }
+.skipped { color: #a33; font-size: .9em; }
+</style>
+</head><body>
+<h1>Alpha Bench Report</h1>
+<div class="meta">
+  Generated 2026-06-11T16:31:16+00:00 &middot; Universe csi300 &middot;
+  Period 2024-2025 &middot; 189 tested, 2 skipped
+</div>
+
+<h2>Top 10 by IR</h2>
+<table>
+<tr><th>#</th><th>Alpha ID</th><th>Zoo</th><th>Theme</th>
+    <th>IC mean</th><th>IC std</th><th>IR</th><th>IC+ ratio</th><th>N</th></tr>
+
+<tr>
+  <td>1</td>
+  <td>gtja191_120</td>
+  <td>gtja191</td>
+  <td>reversal</td>
+  <td>0.0494</td>
+  <td>0.2667</td>
+  <td>0.1851</td>
+  <td>0.5744</td>
+  <td>484</td>
+</tr>
+
+<tr>
+  <td>2</td>
+  <td>gtja191_114</td>
+  <td>gtja191</td>
+  <td>volume, volatility</td>
+  <td>0.0519</td>
+  <td>0.2822</td>
+  <td>0.1838</td>
+  <td>0.5711</td>
+  <td>478</td>
+</tr>
+
+<tr>
+  <td>3</td>
+  <td>gtja191_171</td>
+  <td>gtja191</td>
+  <td>microstructure</td>
+  <td>0.0465</td>
+  <td>0.2848</td>
+  <td>0.1634</td>
+  <td>0.5744</td>
+  <td>484</td>
+</tr>
+
+<tr>
+  <td>4</td>
+  <td>gtja191_184</td>
+  <td>gtja191</td>
+  <td>reversal</td>
+  <td>0.0328</td>
+  <td>0.2256</td>
+  <td>0.1455</td>
+  <td>0.5352</td>
+  <td>284</td>
+</tr>
+
+<tr>
+  <td>5</td>
+  <td>gtja191_111</td>
+  <td>gtja191</td>
+  <td>volume, microstructure</td>
+  <td>0.0398</td>
+  <td>0.2747</td>
+  <td>0.1449</td>
+  <td>0.5611</td>
+  <td>483</td>
+</tr>
+
+<tr>
+  <td>6</td>
+  <td>gtja191_002</td>
+  <td>gtja191</td>
+  <td>reversal, microstructure</td>
+  <td>0.0403</td>
+  <td>0.2856</td>
+  <td>0.1412</td>
+  <td>0.5652</td>
+  <td>483</td>
+</tr>
+
+<tr>
+  <td>7</td>
+  <td>gtja191_054</td>
+  <td>gtja191</td>
+  <td>volatility, microstructure</td>
+  <td>0.0355</td>
+  <td>0.2658</td>
+  <td>0.1337</td>
+  <td>0.5516</td>
+  <td>475</td>
+</tr>
+
+<tr>
+  <td>8</td>
+  <td>gtja191_163</td>
+  <td>gtja191</td>
+  <td>volume</td>
+  <td>0.0336</td>
+  <td>0.2649</td>
+  <td>0.1267</td>
+  <td>0.5527</td>
+  <td>465</td>
+</tr>
+
+<tr>
+  <td>9</td>
+  <td>gtja191_081</td>
+  <td>gtja191</td>
+  <td>volume</td>
+  <td>0.0280</td>
+  <td>0.2595</td>
+  <td>0.1079</td>
+  <td>0.5455</td>
+  <td>484</td>
+</tr>
+
+<tr>
+  <td>10</td>
+  <td>gtja191_168</td>
+  <td>gtja191</td>
+  <td>volume</td>
+  <td>0.0247</td>
+  <td>0.2450</td>
+  <td>0.1010</td>
+  <td>0.5398</td>
+  <td>465</td>
+</tr>
+
+</table>
+
+<h2>Formulas</h2>
+<table>
+<tr><th>Alpha ID</th><th>Formula (LaTeX source)</th></tr>
+
+<tr><td>gtja191_120</td><td class="formula">rank(vwap-close)/rank(vwap+close)</td></tr>
+
+<tr><td>gtja191_114</td><td class="formula">see body</td></tr>
+
+<tr><td>gtja191_171</td><td class="formula">-1*((l-c)*(o^5))/((c-h)*(c^5))</td></tr>
+
+<tr><td>gtja191_184</td><td class="formula">see body</td></tr>
+
+<tr><td>gtja191_111</td><td class="formula">sma(v*((c-l)-(h-c))/(h-l),11,2)-sma(v*((c-l)-(h-c))/(h-l),4,2)</td></tr>
+
+<tr><td>gtja191_002</td><td class="formula">(-1 * DELTA(((CLOSE - LOW) - (HIGH - CLOSE)) / (HIGH - LOW), 1))</td></tr>
+
+<tr><td>gtja191_054</td><td class="formula">((-1*RANK((STD(ABS(CLOSE-OPEN),10)+(CLOSE-OPEN))+CORR(CLOSE,OPEN,10))))</td></tr>
+
+<tr><td>gtja191_163</td><td class="formula">rank(((-1*ret)*mean(v,20))*vwap*(high-close))</td></tr>
+
+<tr><td>gtja191_081</td><td class="formula">SMA(VOLUME,21,2)</td></tr>
+
+<tr><td>gtja191_168</td><td class="formula">-1*volume/mean(volume,20)</td></tr>
+
+</table>
+
+
+<h2 class="skipped">Skipped / Failed (2 shown)</h2>
+<table>
+<tr><th>Alpha ID</th><th>Reason</th></tr>
+
+<tr><td>gtja191_032</td><td>gtja191_032: output &gt;95% NaN (nan_ratio=0.964)</td></tr>
+
+<tr><td>gtja191_138</td><td>gtja191_138: output &gt;95% NaN (nan_ratio=0.968)</td></tr>
+
+</table>
+
+</body></html>

@@ -16,6 +16,7 @@ results/
 
 .env
 agent/.env
+.local/
 
 .claude/*
 !.claude/hooks.json
@@ -91,3 +92,6 @@ AGENTS.md
 wiki/alpha-library/manifest.json
 wiki/alpha-library/content/
 venv/
+
+# Playwright CLI logs/screenshots (local debug artifacts)
+.playwright-cli/

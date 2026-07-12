@@ -1,0 +1,13 @@
+# Local development override: mount the host's ~/.vibe-trading into the
+# container so strategy-mining artifacts generated on the host are visible
+# inside Docker without regenerating them.
+services:
+  vibe-trading:
+    volumes:
+      - vibe-runs:/app/agent/runs
+      - vibe-sessions:/app/agent/sessions
+      - ~/.vibe-trading:/home/vibe/.vibe-trading
+      - vibe-swarm-runs:/app/agent/.swarm/runs
+      - vibe-uploads:/app/agent/uploads
+      - ${ADSHARE_HOST_DATA_PATH:-/Volumes/mm/project/adshare/data}:/app/adshare/data:ro
+      - /etc/localtime:/etc/localtime:ro

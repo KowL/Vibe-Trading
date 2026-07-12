@@ -30,6 +30,8 @@ import json
 import logging
 import os
 import re
+
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -245,87 +247,250 @@ _SP500_FALLBACK_CODES = [
 ]
 
 
-def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
-    """CSI 300 panel via Tushare. Includes ``amount`` (required by gtja191).
-
-    Constituents are taken from the most recent ``index_weight`` snapshot in
-    the requested window; if that call fails we degrade to a 30-name
-    blue-chip fallback so the bench still runs.
-    """
-    token = get_env_config().data.tushare_token.strip()
+def _csi300_codes_from_tushare(sd: str, ed: str) -> list[str] | None:
+    """Return CSI 300 constituent codes via Tushare ``index_weight``."""
+    token = os.getenv("TUSHARE_TOKEN", "").strip()
     if not token or token == "your-tushare-token":
-        raise RuntimeError(
-            "TUSHARE_TOKEN not in agent/.env or environment; required for csi300 universe"
-        )
-
+        return None
     try:
         import tushare as ts
-    except ImportError as exc:
-        raise RuntimeError(f"tushare not installed: {exc}") from exc
+        pro = ts.pro_api(token)
+        weights = pro.index_weight(index_code="399300.SZ", start_date=sd, end_date=ed)
+        if weights is None or weights.empty:
+            return None
+        latest_date = weights["trade_date"].max()
+        codes = (
+            weights[weights["trade_date"] == latest_date]["con_code"]
+            .drop_duplicates()
+            .tolist()
+        )
+        logger.info("csi300: %d constituents from tushare index_weight @ %s", len(codes), latest_date)
+        return codes
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("csi300 tushare index_weight failed (%s)", exc)
+        return None
 
-    pro = ts.pro_api(token)
+
+def _csi300_codes_from_akshare() -> list[str] | None:
+    """Return current CSI 300 constituent codes via akshare (no token)."""
+    try:
+        import akshare as ak
+    except ImportError:
+        return None
+    try:
+        df = ak.index_stock_cons_weight_csindex(symbol="000300")
+        if df is None or df.empty:
+            return None
+        exchange_map = {"上海证券交易所": ".SH", "深圳证券交易所": ".SZ"}
+        codes: list[str] = []
+        for _, row in df.iterrows():
+            code = str(row["成分券代码"]).strip()
+            suffix = exchange_map.get(str(row["交易所"]).strip())
+            if suffix:
+                codes.append(f"{code}{suffix}")
+        logger.info("csi300: %d constituents from akshare index_weight", len(codes))
+        return codes
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("csi300 akshare constituents failed (%s)", exc)
+        return None
+
+
+def _fetch_one_tushare(code: str, sd: str, ed: str) -> tuple[str, pd.DataFrame | None]:
+    import tushare as ts
+    pro = ts.pro_api(os.getenv("TUSHARE_TOKEN", "").strip())
+    df = _retry(lambda: pro.daily(ts_code=code, start_date=sd, end_date=ed))
+    if df is None or df.empty:
+        return code, None
+    df = df.sort_values("trade_date").copy()
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    df = df.set_index("trade_date")
+    df = df.rename(columns={"vol": "volume"})
+    for col in ("open", "high", "low", "close", "volume", "amount"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    keep = [c for c in ("open", "high", "low", "close", "volume", "amount") if c in df.columns]
+    return code, df[keep].dropna(subset=["open", "high", "low", "close"])
+
+
+def _fetch_one_akshare(ts_code: str, sd: str, ed: str) -> tuple[str, pd.DataFrame | None]:
+    """Fetch one stock's daily OHLCV from akshare (Eastmoney historical kline).
+
+    ``stock_zh_a_hist`` returns Chinese column names; we map them to the
+    project-wide OHLCV schema. Volume is reported in *手* (100 shares), so we
+    multiply by 100 to align with share-count conventions used by Tushare.
+    """
+    try:
+        import akshare as ak
+    except ImportError:
+        return ts_code, None
+    symbol_code = ts_code.split(".")[0]
+    try:
+        df = _retry(
+            lambda: ak.stock_zh_a_hist(
+                symbol=symbol_code,
+                period="daily",
+                start_date=sd,
+                end_date=ed,
+                adjust="qfq",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("csi300 akshare fetch %s failed: %s", ts_code, exc)
+        return ts_code, None
+    if df is None or df.empty or "日期" not in df.columns:
+        return ts_code, None
+    df = df.rename(
+        columns={
+            "日期": "date",
+            "开盘": "open",
+            "收盘": "close",
+            "最高": "high",
+            "最低": "low",
+            "成交量": "volume",
+            "成交额": "amount",
+            "换手率": "turnover",
+        }
+    ).copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date")
+    for col in ("open", "high", "low", "close", "volume", "amount", "turnover"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    # Eastmoney volume is in lots of 100 shares.
+    if "volume" in df.columns:
+        df["volume"] = df["volume"] * 100.0
+    keep = [c for c in ("open", "high", "low", "close", "volume", "amount", "turnover") if c in df.columns]
+    return ts_code, df[keep].dropna(subset=["open", "high", "low", "close"])
+
+
+def _fetch_csi300_tushare_adshare(codes: list[str], sd: str, ed: str) -> dict[str, pd.DataFrame]:
+    """Fetch daily data via tushare/adshare batch kline endpoint."""
+    from src.ashare.tushare_client import TushareClient
+
+    fetched: dict[str, pd.DataFrame] = {}
+    logger.info("csi300: fetching %d codes from tushare/adshare", len(codes))
+    client = TushareClient()
+    batch_size = 50
+    for i in range(0, len(codes), batch_size):
+        batch = codes[i : i + batch_size]
+        try:
+            resp = client.get_kline(
+                code=",".join(batch),
+                period="daily",
+                begin_date=sd,
+                end_date=ed,
+            )
+            data = resp.get("data", []) if isinstance(resp, dict) else []
+            if not data:
+                continue
+            df = pd.DataFrame(data)
+            # tushare/adshare returns: ts_code, trade_date, open, high, low, close, vol, amount
+            df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d")
+            df = df.set_index("trade_date")
+            for col in ("open", "high", "low", "close", "vol", "amount"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.rename(columns={"vol": "volume"})
+            for code in batch:
+                code_df = df[df["ts_code"] == code].copy()
+                if code_df.empty:
+                    continue
+                code_df = code_df.drop(columns=["ts_code"])
+                keep = [c for c in ("open", "high", "low", "close", "volume", "amount") if c in code_df.columns]
+                frame = code_df[keep].dropna(subset=["open", "high", "low", "close"])
+                if not frame.empty:
+                    fetched[code] = frame
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("csi300 tushare/adshare fetch failed for batch %s: %s", batch, exc)
+    client.close()
+    return fetched
+
+
+def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
+    """CSI 300 panel. Prefers Tushare; falls back to akshare, then adshare.
+
+    Includes ``amount`` (required by gtja191).
+    Constituents are taken from the most recent index-weight snapshot available
+    from the active data source; if that call fails we degrade to a 30-name
+    blue-chip fallback so the bench still runs.
+    """
     sd = start.replace("-", "")
     ed = end.replace("-", "")
 
-    codes: list[str] = []
-    try:
-        weights = pro.index_weight(
-            index_code="399300.SZ", start_date=sd, end_date=ed
-        )
-        if weights is not None and not weights.empty:
-            latest_date = weights["trade_date"].max()
-            codes = (
-                weights[weights["trade_date"] == latest_date]["con_code"]
-                .drop_duplicates()
-                .tolist()
-            )
-            logger.info("csi300: %d constituents from index_weight @ %s", len(codes), latest_date)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("csi300 index_weight failed (%s); using fallback list", exc)
-
+    # --- Determine constituent codes -----------------------------------------
+    codes = _csi300_codes_from_tushare(sd, ed)
+    if not codes:
+        codes = _csi300_codes_from_akshare()
     if not codes:
         codes = list(_CSI300_FALLBACK_CODES)
         logger.warning("csi300: using %d-name fallback (degraded run)", len(codes))
 
-    # Fetch raw daily in parallel — we need ``amount`` which the standard
-    # loader drops. Tushare's free tier permits ~200 calls/min so 4 concurrent
-    # workers is comfortably under the rate limit even for a full 300-name list.
-    def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
-        df = _retry(lambda: pro.daily(ts_code=code, start_date=sd, end_date=ed))
-        if df is None or df.empty:
-            return code, None
-        df = df.sort_values("trade_date").copy()
-        df["trade_date"] = pd.to_datetime(df["trade_date"])
-        df = df.set_index("trade_date")
-        df = df.rename(columns={"vol": "volume"})
-        for col in ("open", "high", "low", "close", "volume", "amount"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        keep = [c for c in ("open", "high", "low", "close", "volume", "amount") if c in df.columns]
-        return code, df[keep].dropna(subset=["open", "high", "low", "close"])
-
+    # --- Fetch raw daily -----------------------------------------------------
     fetched: dict[str, pd.DataFrame] = {}
-    with ThreadPoolExecutor(max_workers=_CSI300_FETCH_WORKERS) as pool:
-        futures = [pool.submit(_fetch_one, code) for code in codes]
-        for fut in as_completed(futures):
-            try:
-                code, frame = fut.result()
-            except Exception as exc:  # noqa: BLE001 — _retry already logged
-                logger.warning("csi300 fetch worker raised: %s", exc)
-                continue
-            if frame is not None and not frame.empty:
-                fetched[code] = frame
+
+    # Tushare data path
+    token = os.getenv("TUSHARE_TOKEN", "").strip()
+    use_tushare = token and token != "your-tushare-token"
+    if use_tushare:
+        with ThreadPoolExecutor(max_workers=_CSI300_FETCH_WORKERS) as pool:
+            futures = [pool.submit(_fetch_one_tushare, code, sd, ed) for code in codes]
+            for fut in as_completed(futures):
+                try:
+                    code, frame = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("csi300 tushare fetch worker raised: %s", exc)
+                    continue
+                if frame is not None and not frame.empty:
+                    fetched[code] = frame
+
+    # akshare data path (used when no token, or as a backfill if Tushare empty)
+    if not fetched:
+        logger.info("csi300: fetching %d codes from akshare", len(codes))
+        with ThreadPoolExecutor(max_workers=_CSI300_FETCH_WORKERS) as pool:
+            futures = [pool.submit(_fetch_one_akshare, code, sd, ed) for code in codes]
+            for fut in as_completed(futures):
+                try:
+                    code, frame = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("csi300 akshare fetch worker raised: %s", exc)
+                    continue
+                if frame is not None and not frame.empty:
+                    fetched[code] = frame
+
+    # tushare/adshare fallback
+    if not fetched:
+        fetched = _fetch_csi300_tushare_adshare(list(_CSI300_FALLBACK_CODES), sd, ed)
 
     panel = _wide_from_fetched(fetched, include_amount=True)
-    # CN equity vwap: Tushare ``amount`` is in 千元, ``volume`` in 手. True VWAP
-    # = (amount * 1000 CNY) / (volume * 100 shares). Matches
-    # ``src.factors.base.vwap(EQUITY_CN)``.
+    # Sanitize price fields: non-positive prints are data errors (e.g. akshare
+    # returning 0 for a suspended bar). Replace them with NaN so downstream
+    # percentage returns do not produce inf.
+    for field in ("open", "high", "low", "close"):
+        if field in panel:
+            panel[field] = panel[field].where(panel[field] > 0)
+
+    # CN equity vwap: amount / volume.  (akshare/adshare amount is CNY, volume is shares)
     if "amount" in panel and "volume" in panel:
         from src.factors.base import safe_div
+        panel["vwap"] = safe_div(panel["amount"], panel["volume"] + 1.0)
 
-        panel["vwap"] = safe_div(
-            panel["amount"] * 1000.0, panel["volume"] * 100.0 + 1.0
-        )
+    # Market-cap proxy from akshare turnover data: outstanding_share = volume / turnover,
+    # then market_cap = close * outstanding_share.  Use the median daily estimate per
+    # stock to smooth out noisy turnover prints.
+    if "close" in panel and fetched:
+        shares: dict[str, float] = {}
+        for code, df in fetched.items():
+            if "turnover" in df.columns and "volume" in df.columns:
+                os_series = df["volume"] / df["turnover"].where(df["turnover"] > 0)
+                os_series = os_series.replace([np.inf, -np.inf], np.nan).dropna()
+                if not os_series.empty:
+                    shares[code] = float(os_series.median())
+        if shares:
+            share_series = pd.Series(
+                {code: shares.get(code, float("nan")) for code in panel["close"].columns}
+            )
+            panel["market_cap"] = panel["close"].mul(share_series, axis=1)
+
     return panel
 
 

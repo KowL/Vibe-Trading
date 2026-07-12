@@ -4592,9 +4592,17 @@ def _build_parser() -> argparse.ArgumentParser:
     from src.factors.cli_handlers import add_subparser as _add_alpha_subparser
     _add_alpha_subparser(subparsers)
 
+    # Strategy mining subcommands
+    from src.strategy_mining.cli_handlers import add_subparser as _add_strategy_subparser
+    _add_strategy_subparser(subparsers)
+
     # Hypothesis Registry subcommands
     from src.hypotheses.cli_handlers import add_subparser as _add_hypothesis_subparser
     _add_hypothesis_subparser(subparsers)
+
+    # A-share subcommands
+    from src.ashare.cli_handlers import add_subparser as _add_ashare_subparser
+    _add_ashare_subparser(subparsers)
 
     return parser
 
@@ -5408,9 +5416,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "alpha":
         from src.factors.cli_handlers import dispatch as _alpha_dispatch
         return _coerce_exit_code(_alpha_dispatch(args))
+    if args.command == "strategy":
+        from src.strategy_mining.cli_handlers import dispatch as _strategy_dispatch
+        return _coerce_exit_code(_strategy_dispatch(args))
     if args.command == "hypothesis":
         from src.hypotheses.cli_handlers import dispatch as _hyp_dispatch
         return _coerce_exit_code(_hyp_dispatch(args))
+    if args.command == "ashare":
+        from src.ashare.cli_handlers import dispatch as _ashare_dispatch
+        return _coerce_exit_code(_ashare_dispatch(args))
     if args.command == "connector":
         return _coerce_exit_code(_dispatch_connector(args))
     if args.command == "memory":

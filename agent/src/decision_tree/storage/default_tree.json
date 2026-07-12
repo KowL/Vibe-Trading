@@ -1,0 +1,254 @@
+{
+  "id": "default_tree",
+  "name": "默认交易决策树",
+  "description": "基于情绪周期的基础交易决策树",
+  "version": 1,
+  "rules": [
+    {
+      "id": "rule_ice_001",
+      "name": "冰点试错",
+      "description": "极度恐慌时，30%仓位试错",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "冰点",
+          "description": null
+        }
+      ],
+      "action": "买入",
+      "position_pct": 30.0,
+      "priority": 10,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947027",
+      "updated_at": "2026-06-09T21:53:39.947050",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_structural_main_001",
+      "name": "结构主升聚焦主线",
+      "description": "主线爆发但连板高度未完全打开，70%仓位聚焦主线核心",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "结构主升",
+          "description": null
+        }
+      ],
+      "action": "加仓",
+      "position_pct": 70.0,
+      "priority": 10,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947072",
+      "updated_at": "2026-06-09T21:53:39.947072",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_main_001",
+      "name": "主升干龙头",
+      "description": "情绪高涨，80%仓位聚焦龙头",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "主升",
+          "description": null
+        }
+      ],
+      "action": "买入",
+      "position_pct": 80.0,
+      "priority": 10,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947080",
+      "updated_at": "2026-06-09T21:53:39.947080",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_main_late_001",
+      "name": "主升末期谨慎",
+      "description": "连板高度打开但炸板率上升，70%仓位",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "主升末期",
+          "description": null
+        }
+      ],
+      "action": "持有",
+      "position_pct": 70.0,
+      "priority": 10,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947083",
+      "updated_at": "2026-06-09T21:53:39.947083",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_retreat_early_001",
+      "name": "退潮初期减仓",
+      "description": "高位开始分歧，40%仓位防守，停止追高",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "退潮初期",
+          "description": null
+        }
+      ],
+      "action": "减仓",
+      "position_pct": 40.0,
+      "priority": 10,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947096",
+      "updated_at": "2026-06-09T21:53:39.947096",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_retreat_001",
+      "name": "退潮清仓",
+      "description": "高位瓦解，30%仓位清仓",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "退潮",
+          "description": null
+        }
+      ],
+      "action": "卖出",
+      "position_pct": 30.0,
+      "priority": 10,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947103",
+      "updated_at": "2026-06-09T21:53:39.947103",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_top_001",
+      "name": "高潮减仓",
+      "description": "一致性过强，50%仓位减仓",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "高潮",
+          "description": null
+        }
+      ],
+      "action": "减仓",
+      "position_pct": 50.0,
+      "priority": 10,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947109",
+      "updated_at": "2026-06-09T21:53:39.947110",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_trial_001",
+      "name": "试错期轻仓验证",
+      "description": "情绪修复初期，50%仓位试错，等待主线确认",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "试错",
+          "description": null
+        }
+      ],
+      "action": "买入",
+      "position_pct": 50.0,
+      "priority": 15,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947086",
+      "updated_at": "2026-06-09T21:53:39.947086",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_chaos_bull_001",
+      "name": "混沌偏多控仓参与",
+      "description": "偏多震荡时保留弹性，60%仓位参与强势方向",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "混沌偏多",
+          "description": null
+        }
+      ],
+      "action": "持有",
+      "position_pct": 60.0,
+      "priority": 15,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947090",
+      "updated_at": "2026-06-09T21:53:39.947090",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_chaos_bear_001",
+      "name": "混沌偏空防守",
+      "description": "偏空震荡时降低暴露，40%仓位以内观察",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "混沌偏空",
+          "description": null
+        }
+      ],
+      "action": "观望",
+      "position_pct": 40.0,
+      "priority": 15,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947093",
+      "updated_at": "2026-06-09T21:53:39.947093",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    },
+    {
+      "id": "rule_chaos_001",
+      "name": "混沌等待",
+      "description": "无法判断，50%仓位等待",
+      "conditions": [
+        {
+          "field": "sentiment_cycle",
+          "operator": "eq",
+          "value": "混沌",
+          "description": null
+        }
+      ],
+      "action": "观望",
+      "position_pct": 50.0,
+      "priority": 20,
+      "enabled": true,
+      "created_at": "2026-06-09T21:53:39.947107",
+      "updated_at": "2026-06-09T21:53:39.947107",
+      "created_by": "system",
+      "version": 1,
+      "source": null
+    }
+  ],
+  "root_node": null,
+  "created_at": "2026-06-09T21:53:39.947148",
+  "updated_at": "2026-06-09T21:53:39.947148",
+  "active": true
+}

@@ -42,6 +42,35 @@ function wrap(Component: ComponentType) {
   );
 }
 
+const AShare = lazy(() =>
+  import("@/pages/ashare/ASharePage").then((m) => ({ default: m.ASharePage })),
+);
+const LimitUp = lazy(() =>
+  import("@/pages/ashare/LimitUpPage").then((m) => ({ default: m.LimitUpPage })),
+);
+const Portfolio = lazy(() =>
+  import("@/pages/ashare/PortfolioPage").then((m) => ({ default: m.PortfolioPage })),
+);
+const Report = lazy(() =>
+  import("@/pages/ashare/ReportPage").then((m) => ({ default: m.ReportPage })),
+);
+
+const DecisionTree = lazy(() =>
+  import("@/pages/DecisionTree").then((m) => ({ default: m.DecisionTree })),
+);
+const Strategy = lazy(() =>
+  import("@/pages/ashare/StrategyPage").then((m) => ({ default: m.default })),
+);
+const StrategyCompare = lazy(() =>
+  import("@/pages/ashare/ComparePage").then((m) => ({ default: m.default })),
+);
+const StrategyMarket = lazy(() =>
+  import("@/pages/ashare/StrategyMarketPage").then((m) => ({ default: m.default })),
+);
+const StrategyMining = lazy(() =>
+  import("@/pages/ashare/StrategyMiningPage").then((m) => ({ default: m.default })),
+);
+
 export const router = createBrowserRouter([
   {
     element: <Layout />,
@@ -50,11 +79,20 @@ export const router = createBrowserRouter([
       { path: "/agent", element: wrap(Agent) },
       { path: "/runtime", element: wrap(Runtime) },
       { path: "/reports", element: wrap(Reports) },
+      { path: "/alpha-zoo", element: wrap(AlphaZoo) },
       { path: "/settings", element: wrap(Settings) },
+      { path: "/correlation", element: wrap(Correlation) },
+      { path: "/ashare", element: wrap(AShare) },
+      { path: "/ashare/limit-up", element: wrap(LimitUp) },
+      { path: "/ashare/portfolio", element: wrap(Portfolio) },
+      { path: "/ashare/report", element: wrap(Report) },
+      { path: "/ashare/strategy", element: wrap(Strategy) },
+      { path: "/ashare/strategy/compare", element: wrap(StrategyCompare) },
+      { path: "/ashare/strategy/market", element: wrap(StrategyMarket) },
+      { path: "/ashare/strategy/mining", element: wrap(StrategyMining) },
+      { path: "/decision-tree", element: wrap(DecisionTree) },
       { path: "/runs/:runId", element: wrap(RunDetail) },
       { path: "/compare", element: wrap(Compare) },
-      { path: "/correlation", element: wrap(Correlation) },
-      { path: "/alpha-zoo", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/bench", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/compare", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/:alphaId", element: wrap(AlphaZoo) },

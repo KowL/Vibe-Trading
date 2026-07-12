@@ -827,7 +827,7 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
     if source in ("okx", "ccxt"):
         from backtest.engines.crypto import CryptoEngine
         return CryptoEngine(config)
-    elif source in ("tushare", "akshare"):
+    elif source in ("tushare", "akshare", "mootdx"):
         if markets & {"us_equity", "hk_equity"}:
             from backtest.engines.global_equity import GlobalEquityEngine
             market = _detect_submarket(codes)

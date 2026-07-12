@@ -1,3 +1,9 @@
+# NOTE: Docker deployment is no longer the recommended default.
+# The image builds the full frontend and ships the complete Python scientific
+# stack, which can exceed Docker Desktop's default memory limit (2-4 GB on
+# macOS/Windows) and cause OOM kills during backtests, alpha benches, or swarm
+# runs. For daily use, prefer the local install scripts in scripts/.
+
 services:
   vibe-trading:
     build: .
@@ -7,11 +13,14 @@ services:
       - agent/.env
     environment:
       - VIBE_TRADING_TRUST_DOCKER_LOOPBACK=1
+      - TZ=Asia/Shanghai
       # Ollama runs on the host; from inside the container "localhost" is the
       # container itself, so default to reaching the host via host.docker.internal.
       # Override by exporting OLLAMA_BASE_URL (or setting it in a top-level .env)
       # when Ollama runs elsewhere or on a different port.
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # A-share local parquet data path (mounted below).
+      - ADSHARE_DATA_PATH=${ADSHARE_DATA_PATH:-/app/adshare/data}
     extra_hosts:
       # Maps host.docker.internal -> host gateway (needed on Linux; harmless on Docker Desktop).
       # Requires Docker Engine >= 20.10 / Compose v2 (host-gateway support).
@@ -26,6 +35,10 @@ services:
       - vibe-home:/home/vibe/.vibe-trading
       - vibe-swarm-runs:/app/agent/.swarm/runs
       - vibe-uploads:/app/agent/uploads
+      # A-share parquet data from host adshare installation.
+      - ${ADSHARE_HOST_DATA_PATH:-/Volumes/mm/project/adshare/data}:/app/adshare/data:ro
+      # Keep container clock in sync with the host for A-share market hours.
+      - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
 
   frontend:
