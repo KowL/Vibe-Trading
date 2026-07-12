@@ -424,23 +424,62 @@ vibe-trading-mcp               # start MCP server (stdio)
 
 | Path | Best for | Time |
 |------|----------|------|
-| **A. Docker** | Try it now, zero local setup | 2 min |
-| **B. Local install** | Development, full CLI access | 5 min |
+| **A. Local install** ⭐ | Daily use, avoids Docker memory limits | 5 min |
+| **B. Docker** | Try it now, zero local setup | 2 min |
 | **C. MCP plugin** | Plug into your existing agent | 3 min |
 | **D. ClawHub** | One command, no cloning | 1 min |
+
+> [!TIP]
+> **Local install is now the recommended deployment.** The Docker image builds the full frontend and ships a complete Python scientific stack, which can exceed available container memory (especially on Docker Desktop / macOS with default 2-4 GB limits) and trigger OOM kills during backtests or swarm runs. Running locally uses your host's memory and avoids the container overhead.
 
 ### Prerequisites
 
 - An **LLM API key** from any supported provider — or run locally with **Ollama** (no key needed)
-- **Python 3.11+** for Path B
-- **Docker** for Path A
+- **Python 3.11+** for Path A (recommended)
+- **Node.js 20+** if you want the Web UI
+- **Docker** for Path B (optional; may require >4 GB memory)
 - OpenAI Codex can also be used with ChatGPT OAuth: set `LANGCHAIN_PROVIDER=openai-codex`, then run `vibe-trading provider login openai-codex`. This does not use `OPENAI_API_KEY`.
 
 > **Supported LLM providers:** OpenRouter, OpenAI, DeepSeek, Gemini, Groq, DashScope/Qwen, Zhipu, Moonshot/Kimi, MiniMax, Xiaomi MIMO, Z.ai, Ollama (local). See `.env.example` for config.
 
 > **Tip:** All markets work without any API keys thanks to automatic fallback. yfinance (HK/US), OKX (crypto), mootdx (A-shares, TCP-direct, no IP throttle), and AKShare (A-shares, US, HK, futures, forex) are all free. Tushare token is optional — mootdx is the preferred no-token A-share fallback, with AKShare as a broader backup.
 
-### Path A: Docker (zero setup)
+### Path A: Local install (recommended)
+
+```bash
+git clone https://github.com/HKUDS/Vibe-Trading.git
+cd Vibe-Trading
+
+# One-time install: Python venv, editable package, frontend deps, .env bootstrap
+./scripts/install_local.sh
+
+# Edit agent/.env — set your LLM provider API key
+cp agent/.env.example agent/.env   # if not already created by install_local.sh
+
+# Start backend + frontend dev server
+./scripts/start_local.sh
+```
+
+Open `http://localhost:5899`. The frontend proxies API calls to the backend at `localhost:8899`.
+
+For a single-port production setup (backend serves the built frontend):
+
+```bash
+./scripts/start_local_prod.sh   # serves everything on http://localhost:8899
+```
+
+Stop services with:
+
+```bash
+./scripts/stop_local.sh
+```
+
+Logs are written to `.local/logs/` and PIDs are tracked in `.local/*.pid`.
+
+> [!NOTE]
+> `vibe-trading serve` binds `0.0.0.0` and is loopback-only by default: opening the UI on the **same machine** (`http://localhost:8899`) works with zero config. If you browse from **another machine, a VM host, or a phone on your LAN**, sensitive endpoints return `403` and the chat shows "Remote API access requires an API key" — set a strong `API_AUTH_KEY` in `agent/.env`, restart, and enter the same key once in **Settings**.
+
+### Path B: Docker (optional)
 
 ```bash
 git clone https://github.com/HKUDS/Vibe-Trading.git
@@ -452,53 +491,15 @@ docker compose up --build
 
 Open `http://localhost:8899`. Backend + frontend in one container.
 
+> [!WARNING]
+> Docker builds the frontend and ships the full Python scientific stack, which can exceed the default memory limit on Docker Desktop (2-4 GB on macOS/Windows) and cause **OOM kills** during backtests, alpha benches, or swarm runs. If you see container restarts or `Killed` errors, increase the Docker memory limit or switch to the **local install (Path A)**.
+
 Docker publishes the backend on `127.0.0.1:8899` by default and runs the app as a non-root container user. If you intentionally expose the API beyond your own machine, set a strong `API_AUTH_KEY` and send `Authorization: Bearer <key>` from clients.
 
 > [!NOTE]
 > **Using Ollama with Docker:** the container reaches a host-side Ollama via `host.docker.internal`, not `localhost` (inside the container `localhost` is the container itself). `docker-compose.yml` defaults `OLLAMA_BASE_URL` to `http://host.docker.internal:11434`; export `OLLAMA_BASE_URL` (or set it in a top-level `.env`) to point elsewhere. This relies on the `host-gateway` mapping in `extra_hosts`, which requires **Docker Engine ≥ 20.10 / Compose v2** (provided automatically on Docker Desktop).
 
 Your data survives updates: persistent memory, the cross-session search index, user-created skills, shadow accounts, broker connector config, web sessions, backtest runs, swarm history, and uploads all live in named Docker volumes, so `git pull && docker compose up --build` keeps them. They are deleted only by `docker compose down -v`.
-
-### Path B: Local install
-
-```bash
-git clone https://github.com/HKUDS/Vibe-Trading.git
-cd Vibe-Trading
-python -m venv .venv
-
-# Activate
-source .venv/bin/activate          # Linux / macOS
-# .venv\Scripts\Activate.ps1       # Windows PowerShell
-
-pip install -e .
-cp agent/.env.example agent/.env   # Edit — set your LLM provider API key
-vibe-trading                       # Launch interactive TUI
-```
-
-<details>
-<summary><b>Start web UI (optional)</b></summary>
-
-```bash
-# Terminal 1: API server
-vibe-trading serve --port 8899
-
-# Terminal 2: Frontend dev server
-cd frontend && npm install && npm run dev
-```
-
-Open `http://localhost:5899`. The frontend proxies API calls to `localhost:8899`.
-
-**Production mode (single server):**
-
-```bash
-cd frontend && npm run build && cd ..
-vibe-trading serve --port 8899     # FastAPI serves dist/ as static files
-```
-
-> [!NOTE]
-> `vibe-trading serve` binds `0.0.0.0` and is loopback-only by default: opening the UI on the **same machine** (`http://localhost:8899`) works with zero config. If you browse from **another machine, a VM host, or a phone on your LAN**, sensitive endpoints return `403` and the chat shows "Remote API access requires an API key" — set a strong `API_AUTH_KEY` in `agent/.env`, restart, and enter the same key once in **Settings**. (Docker Desktop's host gateway: set `VIBE_TRADING_TRUST_DOCKER_LOOPBACK=1` with the default `127.0.0.1` port bind.)
-
-</details>
 
 ### Path C: MCP plugin
 
