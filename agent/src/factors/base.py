@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -222,6 +224,27 @@ def signed_power(df: pd.DataFrame, p: float) -> pd.DataFrame:
     arr = df.to_numpy(dtype=np.float64, na_value=np.nan)
     out = np.sign(arr) * np.power(np.abs(arr), p)
     return pd.DataFrame(out, index=df.index, columns=df.columns)
+
+
+def safe_signed_power(base: pd.DataFrame, exponent: pd.DataFrame, max_abs: float = 1e10) -> pd.DataFrame:
+    """``sign(base) * |base|**exponent`` without overflow/underflow warnings.
+
+    Computes in log-space and caps the magnitude so the result always stays
+    within ``[-max_abs, max_abs]``.  NaN inputs stay NaN.  This is intended
+    for factors like alpha101_084 where the exponent itself is a data series
+    (e.g. ``delta(close, 5)``) and can be large for high-priced stocks.
+    """
+    b = base.to_numpy(dtype=np.float64, na_value=np.nan)
+    e = exponent.to_numpy(dtype=np.float64, na_value=np.nan)
+    abs_b = np.abs(b)
+    # log(0) is handled by treating abs_b==0 as log(1)=0; sign(0)=0 so output 0.
+    safe_abs = np.where(abs_b > 0, abs_b, 1.0)
+    log_out = e * np.log(safe_abs)
+    max_log = math.log(max_abs)
+    log_out = np.clip(log_out, -max_log, max_log)
+    out = np.sign(b) * np.exp(log_out)
+    out = np.where(np.isfinite(out), out, np.nan)
+    return pd.DataFrame(out, index=base.index, columns=base.columns)
 
 
 def safe_div(a: pd.DataFrame, b: pd.DataFrame, eps: float = 1e-12) -> pd.DataFrame:
