@@ -1,18 +1,26 @@
 """Lightweight stock-name resolver with fallback cache.
 
 Tries tushare/adshare stock_basic endpoint first, then falls back to the local
-``meta/codes.parquet`` shipped with the adshare dataset, and finally to a
-small hard-coded map so local development still shows names when everything
-else is offline.
+``meta/codes.parquet`` shipped with the adshare dataset, then to an optional
+user-supplied names file (``STOCK_NAMES_PATH``), and finally to a small
+hard-coded map so local development still shows names when everything else is
+offline.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# A valid stock-basic list should contain names for the vast majority of
+# listed stocks. Anything smaller is treated as a partial/broken response and
+# we fall back to the next source.
+_MIN_VALID_NAMES = 1000
 
 
 # Fallback names for the default liquid universe used by local_select.
@@ -104,8 +112,8 @@ _FALLBACK_NAMES: dict[str, str] = {
 
 def _detect_data_root() -> Path:
     """Auto-detect adshare data directory."""
-    for env_var in ("ADSHARE_DATA_PATH",):
-        env_path = __import__("os").environ.get(env_var)
+    for env_var in ("ADSHARE_DATA_PATH", "ASHARE_DATA_PATH"):
+        env_path = os.environ.get(env_var)
         if env_path:
             return Path(env_path)
     candidates = [
@@ -119,6 +127,15 @@ def _detect_data_root() -> Path:
         if p.exists():
             return p
     return Path("/app/adshare/data")
+
+
+def _clean_names(raw: dict[str, Any]) -> dict[str, str]:
+    """Return a map of symbol -> non-empty name, discarding blanks."""
+    return {
+        str(code).strip(): str(name).strip()
+        for code, name in raw.items()
+        if str(code).strip() and str(name).strip()
+    }
 
 
 def _load_from_codes_parquet() -> dict[str, str] | None:
@@ -135,16 +152,86 @@ def _load_from_codes_parquet() -> dict[str, str] | None:
         df = con.execute(
             f"SELECT code, name FROM read_parquet('{path}') WHERE code IS NOT NULL"
         ).fetchdf()
-        names = {
-            str(row["code"]).strip(): str(row["name"]).strip()
-            for _, row in df.iterrows()
-            if str(row["code"]).strip() and str(row["name"]).strip()
-        }
+        names = _clean_names(
+            {
+                str(row["code"]).strip(): str(row["name"]).strip()
+                for _, row in df.iterrows()
+            }
+        )
         if len(names) > 100:
             logger.info("loaded %d stock names from %s", len(names), path)
             return names
     except Exception as exc:
         logger.debug("codes.parquet name load failed: %s", exc)
+    return None
+
+
+def _load_from_env_file() -> dict[str, str] | None:
+    """Load symbol -> name from ``STOCK_NAMES_PATH`` if set.
+
+    Supports JSON ({"000001.SZ": "平安银行", ...}), CSV with ``code,name``
+    columns, or parquet with ``code`` and ``name`` columns.
+    """
+    path_str = os.environ.get("STOCK_NAMES_PATH")
+    if not path_str:
+        return None
+
+    path = Path(path_str)
+    if not path.exists():
+        logger.warning("STOCK_NAMES_PATH set but file not found: %s", path)
+        return None
+
+    try:
+        suffix = path.suffix.lower()
+        if suffix == ".json":
+            import json
+
+            with path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                names = _clean_names(data)
+            elif isinstance(data, list):
+                names = _clean_names(
+                    {
+                        str(item.get("code") or item.get("ts_code") or item.get("symbol")): str(item.get("name", ""))
+                        for item in data
+                    }
+                )
+            else:
+                return None
+        elif suffix == ".csv":
+            import csv
+
+            names: dict[str, str] = {}
+            with path.open("r", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    code = (row.get("code") or row.get("ts_code") or row.get("symbol") or "").strip()
+                    name = (row.get("name") or "").strip()
+                    if code and name:
+                        names[code] = name
+        elif suffix == ".parquet":
+            import duckdb
+
+            con = duckdb.connect(database=":memory:")
+            df = con.execute(
+                f"SELECT code, name FROM read_parquet('{path}') WHERE code IS NOT NULL"
+            ).fetchdf()
+            names = _clean_names(
+                {
+                    str(row["code"]).strip(): str(row["name"]).strip()
+                    for _, row in df.iterrows()
+                }
+            )
+        else:
+            logger.warning("unsupported STOCK_NAMES_PATH extension: %s", suffix)
+            return None
+
+        if len(names) > 100:
+            logger.info("loaded %d stock names from %s", len(names), path)
+            return names
+    except Exception as exc:
+        logger.warning("failed to load STOCK_NAMES_PATH %s: %s", path, exc)
     return None
 
 
@@ -158,20 +245,52 @@ def _load_name_map() -> dict[str, str]:
         resp = client.get_stock_basic()
         if resp and "data" in resp:
             data = resp["data"]
-            names = {
-                item.get("code", ""): item.get("name", "")
-                for item in data
-                if item.get("code")
-            }
-            if len(names) > 100:
+            names = _clean_names(
+                {
+                    item.get("code", ""): item.get("name", "")
+                    for item in data
+                    if item.get("code")
+                }
+            )
+            if len(names) >= _MIN_VALID_NAMES:
+                logger.info("loaded %d stock names from tushare/adshare", len(names))
                 return names
+            logger.warning(
+                "tushare/adshare stock_basic returned only %d valid names "
+                "(expected >= %d); trying fallback sources",
+                len(names),
+                _MIN_VALID_NAMES,
+            )
     except Exception as exc:
-        logger.debug("tushare stock_basic failed, trying codes.parquet: %s", exc)
+        logger.debug("tushare stock_basic failed, trying fallback sources: %s", exc)
 
     parquet_names = _load_from_codes_parquet()
-    if parquet_names:
+    if parquet_names and len(parquet_names) >= _MIN_VALID_NAMES:
         return parquet_names
 
+    env_names = _load_from_env_file()
+    if env_names and len(env_names) >= _MIN_VALID_NAMES:
+        return env_names
+
+    if parquet_names:
+        logger.warning(
+            "codes.parquet only contained %d names; using hard-coded fallback for known symbols",
+            len(parquet_names),
+        )
+        # Merge so hard-coded names fill gaps if parquet is partial.
+        return {**_FALLBACK_NAMES, **parquet_names}
+
+    if env_names:
+        logger.warning(
+            "STOCK_NAMES_PATH only contained %d names; using hard-coded fallback for known symbols",
+            len(env_names),
+        )
+        return {**_FALLBACK_NAMES, **env_names}
+
+    logger.warning(
+        "no valid stock-name source available; strategy market will show names only for the %d hard-coded symbols",
+        len(_FALLBACK_NAMES),
+    )
     return _FALLBACK_NAMES.copy()
 
 
