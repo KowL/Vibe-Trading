@@ -166,6 +166,8 @@ class LimitUpBacktestEngine:
                 if min_consecutive_days <= record.limit_up_count <= max_consecutive_days:
                     # Simulate entry at limit-up price
                     entry_price = record.limit_up_price
+                    if entry_price <= 0:
+                        continue
                     quantity = int(position_size / entry_price)
                     if quantity < 1:
                         continue
