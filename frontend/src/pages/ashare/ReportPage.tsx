@@ -23,9 +23,9 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 const KIND_DESCRIPTIONS: Record<string, string> = {
-  open: "盘前资讯与集合竞价关键信息",
-  close: "当日盘面总结、热点板块与涨停梯队复盘",
-  weekly: "本周主线、连板高度与情绪周期回顾",
+  open: "基于昨日收盘数据的盘前研判与今日关注方向",
+  close: "当日盘面总结、热点板块、涨停梯队与次日策略",
+  weekly: "本周主线轮动、连板高度变化与下周展望",
 };
 
 const remarkPlugins = [remarkGfm];
@@ -118,6 +118,22 @@ export function ReportPage() {
 
   useEffect(() => {
     load();
+
+    const sseUrl = api.ashareSseUrl();
+    const es = new EventSource(sseUrl);
+    es.addEventListener("ashare_market_report", (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload?.kind === kind && payload?.trade_date === date) {
+          load();
+        }
+      } catch {
+        // Ignore malformed SSE payloads.
+      }
+    });
+    return () => {
+      es.close();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, date]);
 
@@ -250,7 +266,7 @@ export function ReportPage() {
               <div className="rounded-lg border border-dashed p-12 text-center">
                 <FileText className="mx-auto mb-2 h-6 w-6 text-muted-foreground/60" />
                 <p className="text-sm text-muted-foreground">该日期暂无报告</p>
-                <p className="mt-1 text-xs text-muted-foreground/70">点击「生成报告」AI 写一份</p>
+                <p className="mt-1 text-xs text-muted-foreground/70">点击「生成报告」生成数据驱动的盘面报告</p>
               </div>
             )}
           </div>

@@ -13,6 +13,10 @@ import {
   AlertCircle,
   Play,
   Layers,
+  Sparkles,
+  X,
+  Copy,
+  Check,
 } from "lucide-react";
 import * as echarts from "echarts";
 import { cn } from "@/lib/utils";
@@ -80,6 +84,25 @@ interface MarketState {
   last_updated: string | null;
 }
 
+interface ConsensusSignal {
+  strategy_id: string;
+  strategy_name: string;
+  signal: MatchedSymbol["signal"];
+  score: number;
+  confidence: number;
+}
+
+interface ConsensusItem {
+  symbol: string;
+  name: string;
+  consensus_score: number;
+  dominant_signal: MatchedSymbol["signal"];
+  strategy_count: number;
+  avg_confidence: number;
+  signals: ConsensusSignal[];
+  action_suggestion: string;
+}
+
 const signalBadge: Record<MatchedSymbol["signal"], { label: string; cls: string }> = {
   buy: { label: "买入", cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
   sell: { label: "卖出", cls: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
@@ -90,10 +113,20 @@ const signalBadge: Record<MatchedSymbol["signal"], { label: string; cls: string 
 export default function StrategyMarketPage() {
   const [state, setState] = useState<MarketState>({ strategies: [], snapshots: {}, last_updated: null });
   const [activeId, setActiveId] = useState<string>("");
+  const activeIdRef = useRef(activeId);
   const [loading, setLoading] = useState(false);
+  const [consensusLoading, setConsensusLoading] = useState(false);
+  const [consensus, setConsensus] = useState<ConsensusItem[] | null>(null);
+  const [showConsensus, setShowConsensus] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const chartRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<echarts.EChartsType | null>(null);
+
+  // Keep ref in sync so polling callback always sees the latest activeId
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   const activeStrategy = useMemo(
     () => state.strategies.find((s) => s.id === activeId),
@@ -107,7 +140,7 @@ export default function StrategyMarketPage() {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data: MarketState = await resp.json();
       setState(data);
-      if (!activeId && data.strategies.length > 0) {
+      if (!activeIdRef.current && data.strategies.length > 0) {
         setActiveId(data.strategies[0].id);
       }
     } catch (e) {
@@ -135,6 +168,38 @@ export default function StrategyMarketPage() {
       setError(String(e));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchConsensus = async () => {
+    setConsensusLoading(true);
+    setError("");
+    try {
+      const resp = await fetch(`${API_BASE}/ashare/strategy-market/consensus?top_n=20`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      setConsensus(data.ranked || []);
+      setShowConsensus(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setConsensusLoading(false);
+    }
+  };
+
+  const shareConsensus = async () => {
+    if (!consensus) return;
+    const lines = consensus.map((item, idx) => {
+      const strategies = item.signals.map((s) => `${s.strategy_name}(${signalBadge[s.signal].label})`).join("、");
+      return `${idx + 1}. ${item.symbol} ${item.name} - ${signalBadge[item.dominant_signal].label} - ${item.action_suggestion}\n   匹配策略: ${strategies}`;
+    });
+    const text = `策略市场 · 一键选股综合推荐（前 ${consensus.length} 只）\n\n${lines.join("\n\n")}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("复制失败，请手动复制");
     }
   };
 
@@ -231,14 +296,24 @@ export default function StrategyMarketPage() {
             <span className="ml-2">· 更新于 {new Date(state.last_updated).toLocaleString("zh-CN")}</span>
           )}
         </div>
-        <button
-          onClick={refreshAll}
-          disabled={loading}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
-        >
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-          {loading ? "刷新中..." : "刷新全部策略"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={fetchConsensus}
+            disabled={consensusLoading}
+            className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+          >
+            <Sparkles className={cn("h-4 w-4", consensusLoading && "animate-spin")} />
+            {consensusLoading ? "选股中..." : "一键选股"}
+          </button>
+          <button
+            onClick={refreshAll}
+            disabled={loading}
+            className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+          >
+            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+            {loading ? "刷新中..." : "刷新全部策略"}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -386,9 +461,10 @@ export default function StrategyMarketPage() {
                       <th className="px-4 py-2 text-left font-medium">代码</th>
                       <th className="px-4 py-2 text-left font-medium">名称</th>
                       <th className="px-4 py-2 text-center font-medium">信号</th>
+                      <th className="px-4 py-2 text-left font-medium min-w-[240px]">操作建议</th>
                       <th className="px-4 py-2 text-right font-medium">得分</th>
                       <th className="px-4 py-2 text-right font-medium">置信度</th>
-                      <th className="px-4 py-2 text-left font-medium">详情</th>
+                      <th className="px-4 py-2 text-left font-medium">指标详情</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -406,10 +482,18 @@ export default function StrategyMarketPage() {
                             {signalBadge[m.signal].label}
                           </span>
                         </td>
+                        <td className="px-4 py-2 text-sm">
+                          {typeof m.metadata?.action_suggestion === "string" ? (
+                            <span className="text-foreground">{m.metadata.action_suggestion}</span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
                         <td className="px-4 py-2 text-right">{m.score?.toFixed(3) ?? "—"}</td>
                         <td className="px-4 py-2 text-right">{(m.confidence * 100).toFixed(1)}%</td>
                         <td className="px-4 py-2 text-xs text-muted-foreground">
                           {Object.entries(m.metadata)
+                            .filter(([k]) => k !== "action_suggestion")
                             .slice(0, 4)
                             .map(([k, v]) => `${k}: ${typeof v === "number" ? v.toFixed(2) : String(v)}`)
                             .join(" · ")}
@@ -424,6 +508,99 @@ export default function StrategyMarketPage() {
                 暂无匹配标的，点击右上角刷新全部策略。
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Consensus Dialog */}
+      {showConsensus && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-background rounded-lg border shadow-lg w-full max-w-6xl max-h-[85vh] flex flex-col">
+            <div className="p-4 border-b flex items-center justify-between">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-amber-600" />
+                一键选股 · 综合推荐
+              </h3>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={shareConsensus}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-sm font-medium hover:bg-muted transition-colors"
+                >
+                  {copied ? (
+                    <>
+                      <Check className="h-4 w-4 text-green-600" />
+                      已复制
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-4 w-4" />
+                      分享
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => setShowConsensus(false)}
+                  className="p-1.5 rounded-md hover:bg-muted transition-colors"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="overflow-auto p-4">
+              {consensus && consensus.length > 0 ? (
+                <div className="overflow-x-auto rounded-lg border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 sticky top-0">
+                      <tr>
+                        <th className="px-4 py-2 text-left font-medium">排名</th>
+                        <th className="px-4 py-2 text-left font-medium">代码</th>
+                        <th className="px-4 py-2 text-left font-medium">名称</th>
+                        <th className="px-4 py-2 text-center font-medium">综合信号</th>
+                        <th className="px-4 py-2 text-right font-medium">综合得分</th>
+                        <th className="px-4 py-2 text-center font-medium">共振策略数</th>
+                        <th className="px-4 py-2 text-left font-medium min-w-[200px]">匹配策略</th>
+                        <th className="px-4 py-2 text-left font-medium min-w-[240px]">操作建议</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {consensus.map((item, idx) => (
+                        <tr key={item.symbol} className="border-b last:border-b-0 hover:bg-muted/30">
+                          <td className="px-4 py-2 text-muted-foreground">{idx + 1}</td>
+                          <td className="px-4 py-2 font-mono font-medium">
+                            <StockLink symbol={item.symbol} />
+                          </td>
+                          <td className="px-4 py-2">
+                            <StockLink symbol={item.symbol}>{item.name || "—"}</StockLink>
+                          </td>
+                          <td className="px-4 py-2 text-center">
+                            <span className={cn("px-2 py-0.5 rounded text-xs font-medium", signalBadge[item.dominant_signal].cls)}>
+                              {signalBadge[item.dominant_signal].label}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2 text-right font-medium">{item.consensus_score.toFixed(3)}</td>
+                          <td className="px-4 py-2 text-center">{item.strategy_count}</td>
+                          <td className="px-4 py-2 text-xs">
+                            {item.signals.map((s) => (
+                              <span key={s.strategy_id} className="inline-flex items-center gap-1 mr-2 mb-1">
+                                <span className={cn("px-1.5 py-0.5 rounded text-[10px] font-medium", signalBadge[s.signal].cls)}>
+                                  {signalBadge[s.signal].label}
+                                </span>
+                                <span className="text-muted-foreground">{s.strategy_name}</span>
+                              </span>
+                            ))}
+                          </td>
+                          <td className="px-4 py-2 text-sm">{item.action_suggestion}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="p-8 text-center text-sm text-muted-foreground">
+                  暂无综合推荐，请先刷新策略。
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

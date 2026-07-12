@@ -203,6 +203,13 @@ export const api = {
       body: JSON.stringify({ broker }),
     }),
 
+  // Strategy mining API
+  listStrategyArtifacts: () => request<StrategyArtifactSummary[]>("/ashare/strategy-mining/list"),
+  getStrategyArtifact: (id: string, kind: "config" | "report" | "search" | "race" = "report") =>
+    request<Record<string, unknown>>(`/ashare/strategy-mining/artifact/${id}?kind=${kind}`),
+  getStrategyEquity: (id: string) =>
+    request<{ equity_curve: Array<{ date: string; equity: number }> }>(`/ashare/strategy-mining/artifact/${id}/equity`),
+
   // A-share API (ported from Ruo.ai)
   listLimitUp: (tradeDate: string) => request<LimitUpRecord[]>(`/ashare/limit-up/${tradeDate}`),
   syncLimitUp: (tradeDate?: string) => request<LimitUpSyncResult>(`/ashare/limit-up/sync${tradeDate ? `?trade_date=${tradeDate}` : ""}`, { method: "POST" }),
@@ -214,6 +221,7 @@ export const api = {
     request<Trade>(`/ashare/portfolios/${portfolioId}/trades`, { method: "POST", body: JSON.stringify(body) }),
   generateReport: (kind: string, tradeDate?: string) => request<Report>(`/ashare/reports/${kind}${tradeDate ? `?trade_date=${tradeDate}` : ""}`, { method: "POST" }),
   getReport: (kind: string, tradeDate: string) => request<Report>(`/ashare/reports/${kind}/${tradeDate}`),
+  ashareSseUrl: () => withAuthQuery(`${BASE}/ashare/events`),
 };
 
 // --- Swarm types ---
@@ -930,6 +938,20 @@ export interface MessageItem {
   created_at: string;
   linked_attempt_id?: string;
   metadata?: Record<string, unknown>;
+}
+
+// --- Strategy mining types ---
+
+export interface StrategyArtifactSummary {
+  id: string;
+  created_at: string;
+  params: Record<string, unknown>;
+  metrics: Record<string, number>;
+  selected_alphas: string[];
+  hypothesis_id: string;
+  has_report: boolean;
+  has_search: boolean;
+  has_race: boolean;
 }
 
 // --- A-share types (ported from Ruo.ai) ---

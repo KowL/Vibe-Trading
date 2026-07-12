@@ -64,6 +64,9 @@ const StrategyCompare = lazy(() =>
 const StrategyMarket = lazy(() =>
   import("@/pages/ashare/StrategyMarketPage").then((m) => ({ default: m.default })),
 );
+const StrategyMining = lazy(() =>
+  import("@/pages/ashare/StrategyMiningPage").then((m) => ({ default: m.default })),
+);
 
 export const router = createBrowserRouter([
   {
@@ -82,6 +85,7 @@ export const router = createBrowserRouter([
       { path: "/ashare/strategy", element: wrap(Strategy) },
       { path: "/ashare/strategy/compare", element: wrap(StrategyCompare) },
       { path: "/ashare/strategy/market", element: wrap(StrategyMarket) },
+      { path: "/ashare/strategy/mining", element: wrap(StrategyMining) },
       { path: "/decision-tree", element: wrap(DecisionTree) },
       { path: "/runs/:runId", element: wrap(RunDetail) },
       { path: "/compare", element: wrap(Compare) },

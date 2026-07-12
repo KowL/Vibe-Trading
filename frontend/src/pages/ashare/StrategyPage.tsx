@@ -205,6 +205,12 @@ export default function StrategyPage() {
           meta="多因子选股 + 自适应回测 + 个股画像"
         />
         <div className="flex flex-wrap items-center gap-2">
+          <Link to="/ashare/strategy/mining">
+            <button className="flex items-center gap-1.5 px-3 py-2 rounded-md border text-sm font-medium hover:bg-muted transition-colors">
+              <BarChart3 className="h-4 w-4" />
+              策略挖掘
+            </button>
+          </Link>
           <Link to="/ashare/strategy/compare">
             <button className="flex items-center gap-1.5 px-3 py-2 rounded-md border text-sm font-medium hover:bg-muted transition-colors">
               <BarChart3 className="h-4 w-4" />

@@ -27,6 +27,7 @@ const A_SHARE_CHILDREN = [
   { to: "/ashare/portfolio", label: "模拟持仓", icon: Wallet },
   { to: "/ashare/report", label: "市场报告", icon: Newspaper },
   { to: "/ashare/strategy", label: "量化策略", icon: TrendingUp },
+  { to: "/ashare/strategy/mining", label: "策略挖掘", icon: BarChart3 },
   { to: "/ashare/strategy/market", label: "策略市场", icon: Store },
 ];
 
