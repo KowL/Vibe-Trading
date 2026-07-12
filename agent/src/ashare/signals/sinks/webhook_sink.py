@@ -42,9 +42,9 @@ logger = logging.getLogger(__name__)
 
 
 def _load_symbol_name_map(base_url: str = "http://localhost:8000") -> dict[str, str]:
-    """Fetch stock code -> name mapping from adshare /market/stock/basic.
+    """Fetch stock code -> name mapping from tushare/adshare /market/stock/basic.
 
-    Falls back to an empty dict if adshare is unreachable so a missing
+    Falls back to an empty dict if the endpoint is unreachable so a missing
     name does not break signal delivery.
     """
     try:
@@ -56,7 +56,7 @@ def _load_symbol_name_map(base_url: str = "http://localhost:8000") -> dict[str, 
         data = r.json().get("data") or []
         return {item.get("code", ""): (item.get("name") or "") for item in data if item.get("code")}
     except Exception as exc:
-        logger.warning("Failed to load symbol name map from adshare: %s", exc)
+        logger.warning("Failed to load symbol name map from tushare/adshare: %s", exc)
         return {}
 
 #: Per-provider sleep after a successful POST. 100ms keeps us under

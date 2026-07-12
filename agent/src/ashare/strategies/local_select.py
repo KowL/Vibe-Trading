@@ -151,7 +151,7 @@ def local_select(
 
     Args:
         trade_date: selection date
-        data_root: path to adshare data root (default: /Volumes/mm/project/adshare/data)
+        data_root: path to local A-share data root (default: /Volumes/mm/project/adshare/data)
         universe: stock codes to consider (None = default universe, ["all_a"] = all local data)
         top_n: return top N stocks
         history_days: K-line history needed

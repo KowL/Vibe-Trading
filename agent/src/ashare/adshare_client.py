@@ -73,14 +73,13 @@ class AdshareClient:
         self,
         code: str,
         period: str = "daily",
-        begin_date: date | str | int | None = None,
-        end_date: date | str | int | None = None,
-        limit: int | None = 60,
+        begin_date: int | str | None = None,
+        end_date: int | str | None = None,
+        limit: int | None = None,
     ) -> dict[str, Any]:
-        """Fetch K-line data from adshare /market/kline.
+        """Fetch K-line data and return the adshare-compatible ``{data: [...]}`` shape.
 
-        ``begin_date`` / ``end_date`` may be ``date`` objects, ISO strings
-        (``YYYY-MM-DD``), or packed integers (``YYYYMMDD``).
+        ``limit`` is ignored for tushare; kept for backward compatibility.
         """
         params: dict[str, Any] = {
             "codes": code,

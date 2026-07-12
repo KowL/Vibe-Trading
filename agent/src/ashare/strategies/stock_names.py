@@ -1,6 +1,6 @@
 """Lightweight stock-name resolver with fallback cache.
 
-Tries adshare's stock_basic endpoint first, then falls back to the local
+Tries tushare/adshare stock_basic endpoint first, then falls back to the local
 ``meta/codes.parquet`` shipped with the adshare dataset, and finally to a
 small hard-coded map so local development still shows names when everything
 else is offline.
@@ -150,11 +150,11 @@ def _load_from_codes_parquet() -> dict[str, str] | None:
 
 @lru_cache(maxsize=1)
 def _load_name_map() -> dict[str, str]:
-    """Load symbol -> name map from adshare, with fallback."""
+    """Load symbol -> name map from tushare/adshare, with fallback."""
     try:
-        from src.ashare.adshare_client import AdshareClient
+        from src.ashare.tushare_client import TushareClient
 
-        client = AdshareClient()
+        client = TushareClient()
         resp = client.get_stock_basic()
         if resp and "data" in resp:
             data = resp["data"]
@@ -166,7 +166,7 @@ def _load_name_map() -> dict[str, str]:
             if len(names) > 100:
                 return names
     except Exception as exc:
-        logger.debug("adshare stock_basic failed, trying codes.parquet: %s", exc)
+        logger.debug("tushare stock_basic failed, trying codes.parquet: %s", exc)
 
     parquet_names = _load_from_codes_parquet()
     if parquet_names:

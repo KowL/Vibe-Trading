@@ -14,9 +14,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.ashare.adshare_client import AdshareClient
 from src.ashare.strategies.multi_factor import MultiFactorSelector, StockScore
 from src.ashare.strategies.trend_timing import Position, Signal, TrendTiming, TradeSignal
+from src.ashare.tushare_client import TushareClient
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +142,8 @@ class MultiFactorBacktest:
     COMMISSION_RATE = 0.0003  # 0.03% per trade (one side)
     SLIPPAGE = 0.001  # 0.1% slippage
 
-    def __init__(self, client: AdshareClient | None = None) -> None:
-        self.client = client or AdshareClient()
+    def __init__(self, client: TushareClient | None = None) -> None:
+        self.client = client or TushareClient()
         self.selector = MultiFactorSelector(client=self.client)
         self.timing = TrendTiming(client=self.client)
 

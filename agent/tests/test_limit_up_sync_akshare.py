@@ -210,7 +210,7 @@ def test_run_prioritizes_akshare(monkeypatch: pytest.MonkeyPatch, tmp_path) -> N
         return [rec]
 
     def should_not_be_called(_date: date) -> list:  # pragma: no cover — guard
-        raise AssertionError("adshare should not be called when akshare succeeds")
+        raise AssertionError("tushare/adshare should not be called when akshare succeeds")
 
     monkeypatch.setattr(limit_up_sync, "_akshare_limit_up", fake_akshare)
     monkeypatch.setattr(limit_up_sync, "_adshare_limit_up", should_not_be_called)

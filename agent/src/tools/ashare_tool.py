@@ -145,11 +145,11 @@ class AShareLimitUpTool(BaseTool):
 
 
 class AShareSyncLimitUpTool(BaseTool):
-    """Sync A-share limit-up data from adshare."""
+    """Sync A-share limit-up data from tushare/adshare."""
 
     name = "ashare_sync_limit_up"
     description = (
-        "从adshare同步A股涨停数据。用于获取最新涨停信息，"
+        "从 tushare/adshare 同步A股涨停数据。用于获取最新涨停信息，"
         "会先调用数据源API获取原始数据，再持久化到本地存储。"
     )
     parameters = {

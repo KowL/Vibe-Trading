@@ -1,7 +1,7 @@
 """Tests for the A-share strategy market.
 
 These tests cover the registry, models, store, engine and runners without
-requiring a live adshare backend.  A small number of integration-style tests
+requiring a live data backend.  A small number of integration-style tests
 skip automatically when no local parquet data is available.
 """
 

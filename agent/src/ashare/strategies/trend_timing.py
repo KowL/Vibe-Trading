@@ -18,8 +18,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.ashare.adshare_client import AdshareClient
 from src.ashare.strategies.multi_factor import MultiFactorSelector, StockScore
+from src.ashare.tushare_client import TushareClient
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +93,8 @@ class TrendTiming:
     HIGH_VOL_ATR_MULTIPLIER = 2.5
     ATR_VOLATILITY_THRESHOLD = 5.0  # ATR as % of price
 
-    def __init__(self, client: AdshareClient | None = None) -> None:
-        self.client = client or AdshareClient()
+    def __init__(self, client: TushareClient | None = None) -> None:
+        self.client = client or TushareClient()
 
     def generate_signals(
         self,
@@ -248,13 +248,7 @@ class TrendTiming:
         begin = (trade_date - timedelta(days=90)).strftime("%Y%m%d")
         end = trade_date.strftime("%Y%m%d")
         try:
-            resp = self.client.get_kline(symbol, period="daily", begin_date=begin, end_date=end)
-            if not resp or "data" not in resp or not resp["data"]:
-                return None
-            df = pd.DataFrame(resp["data"])
-            df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
-            df = df.set_index("date").sort_index()
-            return df
+            return self.client.get_kline(symbol, period="daily", begin_date=begin, end_date=end)
         except Exception as exc:
             logger.debug("fetch kline failed for %s: %s", symbol, exc)
             return None

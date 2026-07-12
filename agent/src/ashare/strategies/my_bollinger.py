@@ -10,7 +10,7 @@
         从上轨回归中轨 → hold (获利了结)
         从下轨回归中轨 → hold (空头回补)
 
-数据源：adshare ``/realtime/kline?codes=...&period=1``。
+数据源：tushare/adshare 兼容层 ``/realtime/kline?codes=...&period=1``。
     盘中（9:30-15:00）有 1m K 缓存，盘后接口仍 200 但 data=[]，runner 自动跳过。
     限流：watchlist 50-200 只 × 0.3s = 单次扫描 < 60s，符合 5 分钟调度间隔。
 
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time as _time
 from datetime import date, datetime
 from pathlib import Path
@@ -44,19 +45,18 @@ from src.ashare.strategies.market_models import (
 logger = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------------- #
-# Configuration                                                               #
-# --------------------------------------------------------------------------- #
+# 数据源：tushare/adshare 兼容层 ``/realtime/kline?codes=...&period=1``。
+#     盘中（9:30-15:00）有 1m K 缓存，盘后接口仍 200 但 data=[]，runner 自动跳过。
 
 WATCHLIST_PATH = "~/.vibe-trading/ashare/bollinger_watchlist.txt"
-ADSHARE_BASE = "http://localhost:8000"
+_ADSHARE_BASE = "http://localhost:8000"
 REALTIME_KLINE_PATH = "/realtime/kline"
 
 DEFAULT_PARAMS: dict[str, Any] = {
     "period": 20,          # 布林带均线窗口（根数）
     "std_n": 2.0,          # 标准差倍数
     "min_bars": 25,        # 触发所需的最少 K 线数（含 period + 5 缓冲）
-    "request_sleep": 0.3,  # adshare 限流间隔（秒）
+    "request_sleep": 0.3,  # 数据源限流间隔（秒）
     "cooldown_seconds": 1800,  # 同 (symbol, side) 30 分钟内不重复推
     "lookback_limit": 240,     # 拉多少根 1m K（4 小时，足够一天盘内）
 }
@@ -101,7 +101,7 @@ def _load_watchlist() -> list[str]:
 
 
 def _fetch_realtime_kline(
-    code: str, period: str, limit: int, base_url: str = ADSHARE_BASE
+    code: str, period: str, limit: int, base_url: str = _ADSHARE_BASE
 ) -> list[dict[str, Any]]:
     """Call ``GET /realtime/kline?codes=<code>&period=<period>``.
 
@@ -120,7 +120,7 @@ def _fetch_realtime_kline(
 def _bars_to_close_series(bars: list[dict[str, Any]]):
     """Project a list of bar dicts to a ``pd.Series`` of close prices.
 
-    Adshare realtime K uses a numeric ``time`` (epoch ms or YYYYMMDDHHmm).
+    Realtime K uses a numeric ``time`` (epoch ms or YYYYMMDDHHmm).
     We only need the close series, not the index, so we just return it.
     """
     if not bars:
@@ -225,6 +225,7 @@ def run_boll(request: StrategyRunRequest) -> StrategySnapshot:
     sleep_s = float(params["request_sleep"])
     lookback = int(params["lookback_limit"])
     period_str = "1"  # 1-minute K is the project's default intraday period
+    base_url = os.getenv("TUSHARE_BASE_URL", _ADSHARE_BASE)
 
     watchlist = _load_watchlist()
     if not watchlist:
@@ -238,7 +239,7 @@ def run_boll(request: StrategyRunRequest) -> StrategySnapshot:
     now_ts = datetime.now()
     for symbol in watchlist:
         try:
-            bars = _fetch_realtime_kline(symbol, period_str, lookback)
+            bars = _fetch_realtime_kline(symbol, period_str, lookback, base_url=base_url)
         except Exception as exc:
             logger.warning("my_bollinger: %s fetch failed: %s", symbol, exc)
             _time.sleep(sleep_s)

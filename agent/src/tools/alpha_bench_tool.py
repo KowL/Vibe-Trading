@@ -362,13 +362,13 @@ def _fetch_one_akshare(ts_code: str, sd: str, ed: str) -> tuple[str, pd.DataFram
     return ts_code, df[keep].dropna(subset=["open", "high", "low", "close"])
 
 
-def _fetch_csi300_adshare(codes: list[str], sd: str, ed: str) -> dict[str, pd.DataFrame]:
-    """Fetch daily data via adshare (batch kline endpoint)."""
-    from src.ashare.adshare_client import AdshareClient
+def _fetch_csi300_tushare_adshare(codes: list[str], sd: str, ed: str) -> dict[str, pd.DataFrame]:
+    """Fetch daily data via tushare/adshare batch kline endpoint."""
+    from src.ashare.tushare_client import TushareClient
 
     fetched: dict[str, pd.DataFrame] = {}
-    logger.info("csi300: fetching %d codes from adshare", len(codes))
-    client = AdshareClient()
+    logger.info("csi300: fetching %d codes from tushare/adshare", len(codes))
+    client = TushareClient()
     batch_size = 50
     for i in range(0, len(codes), batch_size):
         batch = codes[i : i + batch_size]
@@ -379,27 +379,28 @@ def _fetch_csi300_adshare(codes: list[str], sd: str, ed: str) -> dict[str, pd.Da
                 begin_date=sd,
                 end_date=ed,
             )
-            data = resp.get("data", [])
+            data = resp.get("data", []) if isinstance(resp, dict) else []
             if not data:
                 continue
             df = pd.DataFrame(data)
-            # adshare returns: code, date, open, high, low, close, volume, amount
-            df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
-            df = df.set_index("date")
-            for col in ("open", "high", "low", "close", "volume", "amount"):
+            # tushare/adshare returns: ts_code, trade_date, open, high, low, close, vol, amount
+            df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d")
+            df = df.set_index("trade_date")
+            for col in ("open", "high", "low", "close", "vol", "amount"):
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.rename(columns={"vol": "volume"})
             for code in batch:
-                code_df = df[df["code"] == code].copy()
+                code_df = df[df["ts_code"] == code].copy()
                 if code_df.empty:
                     continue
-                code_df = code_df.drop(columns=["code"])
+                code_df = code_df.drop(columns=["ts_code"])
                 keep = [c for c in ("open", "high", "low", "close", "volume", "amount") if c in code_df.columns]
                 frame = code_df[keep].dropna(subset=["open", "high", "low", "close"])
                 if not frame.empty:
                     fetched[code] = frame
         except Exception as exc:  # noqa: BLE001
-            logger.warning("csi300 adshare fetch failed for batch %s: %s", batch, exc)
+            logger.warning("csi300 tushare/adshare fetch failed for batch %s: %s", batch, exc)
     client.close()
     return fetched
 
@@ -455,9 +456,9 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
                 if frame is not None and not frame.empty:
                     fetched[code] = frame
 
-    # adshare fallback
+    # tushare/adshare fallback
     if not fetched:
-        fetched = _fetch_csi300_adshare(list(_CSI300_FALLBACK_CODES), sd, ed)
+        fetched = _fetch_csi300_tushare_adshare(list(_CSI300_FALLBACK_CODES), sd, ed)
 
     panel = _wide_from_fetched(fetched, include_amount=True)
     # Sanitize price fields: non-positive prints are data errors (e.g. akshare

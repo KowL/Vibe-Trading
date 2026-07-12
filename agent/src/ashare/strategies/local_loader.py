@@ -1,6 +1,6 @@
 """Fast local data loader for backtesting using DuckDB/Parquet.
 
-Bypasses HTTP API and reads directly from adshare's on-disk Parquet files.
+Bypasses HTTP API and reads directly from local on-disk Parquet files.
 """
 
 from __future__ import annotations
@@ -39,10 +39,14 @@ class LocalKlineLoader:
         logger.info("LocalKlineLoader: data_root=%s", self.data_root)
 
     def _detect_root(self, explicit: str | None) -> str:
-        """Auto-detect adshare data directory."""
+        """Auto-detect local A-share data directory."""
         if explicit:
             return explicit
         # Try env var
+        env_path = os.environ.get("ASHARE_DATA_PATH")
+        if env_path:
+            return env_path
+        # Backward compatible alias
         env_path = os.environ.get("ADSHARE_DATA_PATH")
         if env_path:
             return env_path
@@ -57,8 +61,8 @@ class LocalKlineLoader:
             if Path(c).exists():
                 return c
         raise RuntimeError(
-            "Cannot find adshare data directory. "
-            "Set ADSHARE_DATA_PATH env or pass data_root explicitly."
+            "Cannot find local A-share data directory. "
+            "Set ASHARE_DATA_PATH env or pass data_root explicitly."
         )
 
     def load(

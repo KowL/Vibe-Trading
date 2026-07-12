@@ -42,7 +42,7 @@ class LimitUpDaily:
         concept: 所属概念 (comma-separated or list).
         reason: 涨停原因 / 消息面.
         created_at: UTC ISO timestamp when this record was persisted.
-        source: Data source identifier ("adshare", "tushare", ...).
+        source: Data source identifier ("akshare", "tushare/adshare", "tushare_cloud", ...).
     """
 
     trade_date: date
@@ -68,7 +68,7 @@ class LimitUpDaily:
     concept: str | None = None
     reason: str | None = None
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    source: str = "adshare"
+    source: str = "akshare"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-safe dict."""

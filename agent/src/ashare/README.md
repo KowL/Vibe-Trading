@@ -85,15 +85,17 @@ vibe-trading ashare report --kind close --generate
 
 ## 数据源
 
-- **adshare** (localhost:8000)
-- 端点: `/market/limit-up`
+- **主数据源**: tushare (兼容端点 `http://localhost:8000/dataapi`)
+- **降级数据源**: akshare (东方财富免费接口)
+- 涨停端点: `/market/limit-up`
 - 字段映射: `limitUpDays` → `limit_up_count`, `price` → `limit_up_price`
 
 ## 配置
 
-环境变量 (`.env`):
+环境变量 (`.env` 或 `~/.vibe-trading/.env`):
 ```
-ADSHARE_URL=http://localhost:8000
+TUSHARE_TOKEN=your_token
+TUSHARE_BASE_URL=http://127.0.0.1:8000/dataapi
 ```
 
 ## 定时任务
@@ -120,4 +122,4 @@ pytest agent/tests/ashare/test_models.py -v
 1. **实盘交易**: 当前仅支持模拟交易（broker=simulated）
 2. **Mandate 授权**: 所有实盘交易必须通过授权书检查
 3. **ST 排除**: 默认排除 ST/*ST 股票
-4. **数据延迟**: adshare 数据可能有 15 分钟延迟
+4. **数据延迟**: 本地 tushare 兼容端点数据可能有 15 分钟延迟

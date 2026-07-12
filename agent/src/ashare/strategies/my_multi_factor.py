@@ -16,7 +16,7 @@
     - 20日动量 < 0 → 跳过（半年趋势向下不参与）
     - 量比 < 0.8 → 跳过（缩量无资金关注）
 
-数据源：AdshareClient（在线），不依赖本地 parquet。
+数据源：TushareClient（本地 adshare /dataapi 兼容层或真实 tushare cloud），不依赖本地 parquet。
 失败处理：单只票拉取失败 → WARNING + 跳过，不影响其他。
 """
 
@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from src.ashare.adshare_client import AdshareClient
+from src.ashare.tushare_client import TushareClient
 from src.ashare.signals.delivery import get_delivery_service
 from src.ashare.strategies.market_models import (
     MatchedSymbol,
@@ -61,7 +61,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "min_mom_20": 0.0,           # 20日动量下限（低于则过滤）
     "min_volume_ratio": 0.8,     # 量比下限
     "min_history_bars": 60,      # 最小历史 K 线数
-    "request_sleep": 0.05,       # adshare 限流间隔（秒）
+    "request_sleep": 0.05,       # 数据源限流间隔（秒）
     "lookback_days": 120,        # 拉数据回看天数（覆盖节假日保证 ≥60 根有效 K 线）
 }
 
@@ -111,7 +111,7 @@ def _load_watchlist() -> list[str]:
 
 
 def _bars_to_df(bars: list[dict[str, Any]]):
-    """Convert the adshare ``data`` list of dicts to a pandas DataFrame sorted by date.
+    """Convert the tushare/adshare ``data`` list of dicts to a pandas DataFrame sorted by date.
 
     Returns ``None`` on bad input; the runner skips that symbol. The
     DataFrame is indexed by a tz-naive :class:`datetime.date` so
@@ -224,7 +224,7 @@ def run_myf(request: StrategyRunRequest) -> StrategySnapshot:
             metadata={"empty_reason": "watchlist_empty", "watchlist_path": str(Path(WATCHLIST_PATH).expanduser())},
         )
 
-    client = AdshareClient()
+    client = TushareClient()
     end_date = market_date.strftime("%Y%m%d")
     begin_date = (market_date - timedelta(days=lookback_days)).strftime("%Y%m%d")
 
@@ -233,7 +233,7 @@ def run_myf(request: StrategyRunRequest) -> StrategySnapshot:
         try:
             resp = client.get_kline(
                 symbol, period="daily",
-                begin_date=begin_date, end_date=end_date, limit=lookback_days + 5,
+                begin_date=begin_date, end_date=end_date,
             )
         except Exception as exc:
             logger.warning("my_multi_factor: %s fetch failed: %s", symbol, exc)

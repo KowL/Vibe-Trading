@@ -19,7 +19,7 @@ import httpx
 
 from src.ashare.models.limit_up import LimitUpDaily
 from src.ashare.storage.limit_up_store import LimitUpStore
-from src.ashare.adshare_client import AdshareClient
+from src.ashare.tushare_client import TushareClient
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +75,10 @@ def _parse_time(value: Any) -> time | None:
 
 
 def _adshare_limit_up(trade_date: date) -> list[LimitUpDaily]:
-    """Fetch limit-up board from adshare /market/limit-up."""
-    client = AdshareClient()
+    """Fetch limit-up board from tushare/adshare /market/limit-up."""
+    client = TushareClient()
     try:
-        payload = client.get_limit_up(trade_date=trade_date, days=1, board_filter="all", exclude_st=True)
+        payload = client.get_limit_up(date=trade_date.strftime("%Y%m%d"), days=1)
         rows = payload.get("stocks", []) if isinstance(payload, dict) else []
         records: list[LimitUpDaily] = []
         for row in rows:
@@ -108,7 +108,7 @@ def _adshare_limit_up(trade_date: date) -> list[LimitUpDaily]:
                 industry=row.get("industry") or None,
                 concept=row.get("concept") or None,
                 reason=row.get("reason") or None,
-                source="adshare",
+                source="tushare/adshare",
             )
             records.append(rec)
         return records
@@ -288,8 +288,8 @@ class LimitUpSyncTask:
             trade_date = _today_shanghai()
 
         errors: list[str] = []
-        # 优先级：akshare (免费/东方财富) → adshare → tushare
-        sources = ["akshare", "adshare", "tushare"]
+        # 优先级：akshare (免费/东方财富) → tushare/adshare → 真实 tushare cloud
+        sources = ["akshare", "adshare", "tushare_cloud"]
         records: list[LimitUpDaily] = []
         source = "akshare"
 
@@ -299,10 +299,10 @@ class LimitUpSyncTask:
                     records = _akshare_limit_up(trade_date)
                 elif src == "adshare":
                     records = _adshare_limit_up(trade_date)
-                elif src == "tushare":
+                elif src == "tushare_cloud":
                     records = _fallback_tushare(trade_date)
                 if records:
-                    source = src
+                    source = "tushare/adshare" if src == "adshare" else src
                     break
             except Exception as exc:
                 msg = f"{src} failed: {exc}"

@@ -3,7 +3,7 @@
 Uses Alpha Zoo factors (GTJA191) + trend/momentum/volume filters
 to generate a ranked stock pool for trend-following strategy.
 
-Data source: adshare (localhost:8000) with 5-year K-line history.
+Data source: tushare (local adshare /dataapi by default) with 5-year K-line history.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.ashare.adshare_client import AdshareClient
 from src.ashare.strategies.stock_names import get_stock_name
+from src.ashare.tushare_client import TushareClient
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +86,8 @@ class MultiFactorSelector:
     MOMENTUM_MIN = 0.0  # 20-day return > 0
     VOLUME_RATIO_MIN = 1.0  # volume > 20-day average
 
-    def __init__(self, client: AdshareClient | None = None) -> None:
-        self.client = client or AdshareClient()
+    def __init__(self, client: TushareClient | None = None) -> None:
+        self.client = client or TushareClient()
 
     def select(
         self,
@@ -247,7 +247,7 @@ class MultiFactorSelector:
         return result
 
     def _get_universe(self) -> list[str]:
-        """Get full stock list from adshare."""
+        """Get full stock list from tushare."""
         try:
             resp = self.client.get_stock_basic()
             if resp and "data" in resp:
@@ -259,12 +259,9 @@ class MultiFactorSelector:
 
     def _fetch_kline(self, symbol: str, begin: str, end: str) -> pd.DataFrame | None:
         """Fetch K-line and return as DataFrame."""
-        resp = self.client.get_kline(symbol, period="daily", begin_date=begin, end_date=end)
-        if not resp or "data" not in resp or not resp["data"]:
+        df = self.client.get_kline(symbol, period="daily", begin_date=begin, end_date=end)
+        if df is None or df.empty:
             return None
-        df = pd.DataFrame(resp["data"])
-        df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
-        df = df.set_index("date").sort_index()
         return df
 
     def _compute_factor(self, factor_id: str, df: pd.DataFrame) -> float:

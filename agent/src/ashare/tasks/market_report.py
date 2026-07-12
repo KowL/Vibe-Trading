@@ -18,11 +18,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from src.ashare.adshare_client import AdshareClient
 from src.ashare.models.limit_up import LimitUpDaily
 from src.ashare.storage.limit_up_store import LimitUpStore
 from src.ashare.tasks.report_llm import ReportLLMError, generate_report_analysis
 from src.ashare.tasks.report_prompts import ReportKind
+from src.ashare.tushare_client import TushareClient
 
 logger = logging.getLogger(__name__)
 
@@ -181,11 +181,11 @@ def _kind_label(kind: ReportKind) -> str:
 
 
 def _fetch_index_quotes(symbols: list[str]) -> dict[str, dict[str, float]]:
-    """Fetch multiple index quotes from adshare /market/snapshot."""
+    """Fetch multiple index quotes from tushare/adshare /market/snapshot."""
     if not symbols:
         return {}
     try:
-        client = AdshareClient()
+        client = TushareClient()
         try:
             payload = client.get_snapshot(symbols)
             data_list = payload.get("data", []) if isinstance(payload, dict) else []
@@ -205,7 +205,7 @@ def _fetch_index_quotes(symbols: list[str]) -> dict[str, dict[str, float]]:
         finally:
             client.close()
     except Exception as exc:
-        logger.warning("adshare index quotes failed for %s: %s", symbols, exc)
+        logger.warning("tushare index quotes failed for %s: %s", symbols, exc)
     return {}
 
 
