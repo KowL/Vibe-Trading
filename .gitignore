@@ -16,6 +16,7 @@ results/
 
 .env
 agent/.env
+.local/
 
 .claude/*
 !.claude/hooks.json
