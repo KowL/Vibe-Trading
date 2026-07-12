@@ -18,6 +18,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.config.accessor import get_env_config
+
 from src.swarm.models import SwarmEvent, SwarmRun
 from src.tools.redaction import redact_internal_paths
 
@@ -136,8 +138,21 @@ class SwarmStore:
 
         Returns:
             Path to the run directory.
+
+        Raises:
+            ValueError: If run_id is empty, absolute, or path-shaped.
         """
-        return self.base_dir / run_id
+        candidate = Path(run_id)
+        if (
+            not run_id.strip()
+            or candidate.is_absolute()
+            or len(candidate.parts) != 1
+            or any(part in {"", ".", ".."} for part in candidate.parts)
+            or "/" in run_id
+            or "\\" in run_id
+        ):
+            raise ValueError(f"run_id {run_id!r} must be a bare run directory name")
+        return self.base_dir / candidate.name
 
     def create_run(self, run: SwarmRun) -> Path:
         """Create the directory structure for a new run and write initial state.
@@ -314,10 +329,7 @@ class SwarmStore:
         Returns:
             Seconds of event silence after which the run should be reaped.
         """
-        try:
-            interval = float(os.getenv("SWARM_HEARTBEAT_INTERVAL_S", "3.0"))
-        except ValueError:
-            interval = 3.0
+        interval = get_env_config().swarm.swarm_heartbeat_interval_s
         heartbeat_floor = max(60.0, interval * 10.0)
 
         agent_budgets = [
@@ -439,7 +451,7 @@ class SwarmStore:
 
     def _reap_stale(self, run: SwarmRun, *, now: datetime) -> SwarmRun:
         """Pure: mark non-terminal tasks failed; derive run status from tasks."""
-        from src.swarm.models import RunStatus, TaskStatus
+        from src.swarm.models import TaskStatus
 
         terminal_task = {TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled}
         last_event_at = _last_event_timestamp(self.run_dir(run.id) / "events.jsonl")

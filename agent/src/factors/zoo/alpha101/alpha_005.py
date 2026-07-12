@@ -1,3 +1,9 @@
+
+# ============================================================
+# 中文名称: Alpha #5 - 高低价差动量
+# 简要说明: (rank((open - (sum(vwap, 10) / 10))) * (-1 * abs(rank((close - vwap))))) ，开盘价与VWAP均值的偏离乘以收盘价偏离的绝对值取负。
+# 典型用途: 综合衡量开盘和收盘相对于VWAP的偏离方向，用于趋势延续性判断。
+# ============================================================
 """Kakushadze Alpha #5.
 
 Formula (paper appendix): rank((open - sum(vwap,10)/10)) * (-1 * abs(rank((close - vwap))))
@@ -37,7 +43,7 @@ __alpha_meta__ = {
     'columns_required': ['open', 'close', 'vwap'],
     'extras_required': [],
     'requires_sector': False,
-    'universe': ['equity_us'],
+    'universe': ['equity_us', 'equity_in'],
     'frequency': ['1D'],
     'decay_horizon': 5,
     'min_warmup_bars': 10,

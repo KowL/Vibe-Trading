@@ -1,5 +1,10 @@
 # Adapted from microsoft/qlib@d5379c520f66a39953bad76234a7019a72796fd0:qlib/contrib/data/handler.py
 # (Apache-2.0). Copyright (c) Microsoft Corporation.
+# ============================================================
+# 中文名称: 最低价位置 10日
+# 简要说明: ts_argmin(low, 10) / 10，10日内最低价出现位置的归一化指标。
+# 典型用途: 值接近0表示最低价出现在近期，接近1表示出现在较早期。
+# ============================================================
 """qlib158 IMIN10: formula = \\mathrm{ts\\_argmin}(\\mathrm{low}, 10) / 10."""
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ __alpha_meta__ = {
     'theme': ['momentum'],
     'formula_latex': '\\\\mathrm{ts\\\\_argmin}(\\\\mathrm{low}, 10) / 10',
     'columns_required': ['low'],
-    'universe': ['equity_us', 'equity_cn', 'equity_hk'],
+    'universe': ['equity_us', 'equity_cn', 'equity_hk', 'equity_in'],
     'frequency': ['1d'],
     'decay_horizon': 10,
     'min_warmup_bars': 10,

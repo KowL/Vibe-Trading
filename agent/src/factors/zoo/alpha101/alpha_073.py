@@ -1,3 +1,9 @@
+
+# ============================================================
+# 中文名称: Kakushadze Alpha #73
+# 简要说明: Kakushadze (2015) 101 Formulaic Alphas 中的第73号因子，详见公式定义。
+# 典型用途: 作为多因子模型中的alpha信号，经中性化处理后用于选股或股指期货交易。
+# ============================================================
 """Kakushadze Alpha #73.
 
 Formula (paper appendix): max(rank(decay_linear(delta(vwap,5), 3)), Ts_Rank(decay_linear(-1*(delta(0.147*open+0.853*low,2)/(0.147*open+0.853*low)), 3), 17)) * -1
@@ -37,7 +43,7 @@ __alpha_meta__ = {
     'columns_required': ['open', 'low', 'vwap', 'close'],
     'extras_required': [],
     'requires_sector': False,
-    'universe': ['equity_us'],
+    'universe': ['equity_us', 'equity_in'],
     'frequency': ['1D'],
     'decay_horizon': 5,
     'min_warmup_bars': 21,

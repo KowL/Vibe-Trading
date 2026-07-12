@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -29,6 +30,7 @@ def write_run_card(
     data_sources: Sequence[str] | None = None,
     strategy_path: Path | None = None,
     warnings: Sequence[str] | None = None,
+    artifact_refs: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Write JSON and Markdown run cards for a backtest run.
 
@@ -40,6 +42,7 @@ def write_run_card(
         data_sources: Data sources used by the run.
         strategy_path: Optional strategy source file to hash for reproducibility.
         warnings: Optional warnings to include in the card.
+        artifact_refs: Optional IRR-AGL artifact references.
 
     Returns:
         The run card payload written to ``run_card.json``.
@@ -67,13 +70,25 @@ def write_run_card(
         "warnings": list(warnings or []),
         "artifacts": _list_artifacts(run_dir),
     }
+    normalized_refs = _normalize_artifact_refs(artifact_refs)
+    if normalized_refs:
+        card["artifact_refs"] = normalized_refs
     if "validation" in metrics:
         card["validation"] = metrics["validation"]
 
+    card = _json_safe(card)
     json_path = run_dir / "run_card.json"
     md_path = run_dir / "run_card.md"
     json_path.write_text(
-        json.dumps(card, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
+        json.dumps(
+            card,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            default=str,
+            allow_nan=False,
+        )
+        + "\n",
         encoding="utf-8",
     )
     md_path.write_text(_render_markdown(card), encoding="utf-8")
@@ -115,6 +130,16 @@ def _scalar_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _is_scalar(value: Any) -> bool:
     return value is None or isinstance(value, (str, int, float, bool))
 
@@ -140,6 +165,17 @@ def _list_artifacts(run_dir: Path) -> list[dict[str, Any]]:
             }
         )
     return artifacts
+
+
+def _normalize_artifact_refs(artifact_refs: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for ref in artifact_refs or []:
+        if hasattr(ref, "model_dump"):
+            value = ref.model_dump(mode="json")  # type: ignore[attr-defined]
+        else:
+            value = dict(ref)
+        refs.append(_json_safe(value))
+    return refs
 
 
 def _render_markdown(card: Mapping[str, Any]) -> str:
@@ -196,5 +232,18 @@ def _render_markdown(card: Mapping[str, Any]) -> str:
         )
     else:
         lines.append("- None found.")
+
+    artifact_refs = card.get("artifact_refs", [])
+    if artifact_refs:
+        lines.extend(["", "## IRR Artifact Refs"])
+        for ref in artifact_refs:
+            if isinstance(ref, Mapping):
+                label = ref.get("artifact_id", "")
+                artifact_type = ref.get("artifact_type", "")
+                digest = ref.get("sha256", "")
+                uri = ref.get("uri", "")
+                lines.append(f"- `{label}` ({artifact_type}, sha256 `{digest}`, uri `{uri}`)")
+            else:
+                lines.append(f"- {ref}")
 
     return "\n".join(lines) + "\n"

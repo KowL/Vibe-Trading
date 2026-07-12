@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from src.channels.config import load_channels_config
 from src.config import (
     AgentConfig,
+    MCPServerConfig,
     get_config_path,
     get_data_dir,
     get_runtime_root,
@@ -17,6 +20,44 @@ from src.config import (
     load_runtime_agent_config,
     sanitize_session_overrides,
 )
+from src.config.schema import (
+    ROBINHOOD_AGENT_CONFIG_PATH,
+    ROBINHOOD_MCP_SERVER_SEED,
+    format_robinhood_mcp_server_seed_json,
+)
+
+
+class _FakeMCPTool:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.description = f"remote {name}"
+        self.inputSchema = {"type": "object"}
+        self.annotations = None
+
+
+class _FakeMCPClient:
+    def __init__(self, tool_names: tuple[str, ...]) -> None:
+        self._tool_names = tool_names
+
+    async def __aenter__(self) -> "_FakeMCPClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def list_tools(self) -> list[_FakeMCPTool]:
+        return [_FakeMCPTool(name) for name in self._tool_names]
+
+    async def call_tool(self, name: str, arguments=None, *, timeout=None, raise_on_error=False):  # noqa: D401
+        raise AssertionError("config tests must not call remote MCP tools")
+
+
+def _fake_mcp_factory(tool_names: tuple[str, ...]):
+    return lambda: _FakeMCPClient(tool_names)
+
+
+def _robinhood_seed_config() -> dict[str, object]:
+    return json.loads(format_robinhood_mcp_server_seed_json())
 
 
 def test_load_agent_config_returns_defaults_when_file_missing(tmp_path: Path) -> None:
@@ -52,6 +93,38 @@ def test_load_agent_config_accepts_camel_case_json(tmp_path: Path) -> None:
     assert config.mcp_servers["demo"].args == ["demo-server"]
     assert config.mcp_servers["demo"].tool_timeout == 15
     assert config.mcp_servers["demo"].enabled_tools == ["alpha"]
+
+
+def test_load_agent_config_accepts_channel_reply_timeout_aliases(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.json"
+    config_path.write_text(
+        """
+        {
+          "channels": {
+            "replyTimeoutS": 1800,
+            "sendMaxRetries": 3
+          }
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    config = load_agent_config(config_path)
+
+    assert config.channels.reply_timeout_s == 1800
+    assert config.channels.send_max_retries == 3
+    assert load_channels_config(config_path)["reply_timeout_s"] == 1800
+
+
+def test_channels_config_accepts_snake_case_reply_timeout() -> None:
+    config = AgentConfig.model_validate({"channels": {"reply_timeout_s": 300}})
+
+    assert config.channels.reply_timeout_s == 300
+
+
+def test_channels_config_rejects_non_positive_reply_timeout() -> None:
+    with pytest.raises(ValidationError):
+        AgentConfig.model_validate({"channels": {"replyTimeoutS": 0}})
 
 
 def test_load_agent_config_supports_yaml(tmp_path: Path) -> None:
@@ -282,6 +355,137 @@ def test_get_data_dir_uses_explicit_config_parent(tmp_path: Path) -> None:
     assert get_runtime_root(config_path) == config_path.parent
     assert get_data_dir(config_path) == config_path.parent
     assert config_path.parent.exists()
+
+
+# ---------------------------------------------------------------------------
+# Robinhood live MCP seed + validation guidance
+# ---------------------------------------------------------------------------
+
+def test_robinhood_safe_seed_loads_and_discovers_enabled_tools_without_warnings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mcp = pytest.importorskip("src.tools.mcp")
+    config = AgentConfig.model_validate(_robinhood_seed_config())
+    server = config.mcp_servers["robinhood"]
+    seed_tools = tuple(ROBINHOOD_MCP_SERVER_SEED["enabled_tools"])
+
+    with caplog.at_level(logging.WARNING, logger="src.tools.mcp"):
+        tools = mcp.build_mcp_tool_wrappers(
+            "robinhood",
+            server,
+            client_factory=_fake_mcp_factory(seed_tools),
+        )
+
+    assert [tool._spec.remote_name for tool in tools] == list(seed_tools)
+    assert "produced 0 enabled tools" not in caplog.text
+
+
+def test_robinhood_wildcard_validation_names_safe_seed_and_config_path() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        AgentConfig.model_validate(
+            {
+                "mcpServers": {
+                    "robinhood": {
+                        "type": "streamableHttp",
+                        "url": "https://agent.robinhood.com/mcp/trading",
+                        "auth": {"type": "oauth", "scopes": ["trading.read"]},
+                        "enabledTools": ["*"],
+                    }
+                }
+            }
+        )
+
+    message = str(excinfo.value)
+    assert "enabledTools allowlist ('*'); pin an explicit read-only tool list" in message
+    assert "safe read-only Robinhood seed" in message
+    assert ROBINHOOD_AGENT_CONFIG_PATH in message
+    assert '"mcpServers"' in message
+    assert '"enabledTools"' in message
+    assert '"get_portfolio"' in message
+    assert "No live channel configured" not in message
+
+
+def test_live_authorize_missing_robinhood_config_prints_safe_seed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from cli._legacy import EXIT_USAGE_ERROR, cmd_live_authorize
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert cmd_live_authorize("robinhood") == EXIT_USAGE_ERROR
+
+    out = capsys.readouterr().out
+    assert "Robinhood MCP server is missing from mcpServers" in out
+    assert "safe read-only Robinhood seed" in out
+    assert ROBINHOOD_AGENT_CONFIG_PATH in out
+    assert '"mcpServers"' in out
+    assert '"enabledTools"' in out
+    assert "No live channel configured" not in out
+
+
+def test_live_authorize_wildcard_robinhood_config_prints_safe_seed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from cli._legacy import EXIT_USAGE_ERROR, cmd_live_authorize
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    config_path = tmp_path / ".vibe-trading" / "agent.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "robinhood": {
+                        "type": "streamableHttp",
+                        "url": "https://agent.robinhood.com/mcp/trading",
+                        "auth": {"type": "oauth", "scopes": ["trading.read"]},
+                        "enabledTools": ["*"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert cmd_live_authorize("robinhood") == EXIT_USAGE_ERROR
+
+    out = capsys.readouterr().out
+    assert 'Robinhood MCP config uses enabledTools: ["*"]' in out
+    assert "safe read-only Robinhood seed" in out
+    assert ROBINHOOD_AGENT_CONFIG_PATH in out
+    assert '"get_portfolio"' in out
+    assert "No live channel configured" not in out
+
+
+def test_mcp_robinhood_wildcard_zero_tools_warning_names_safe_allowlist(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mcp = pytest.importorskip("src.tools.mcp")
+    server = MCPServerConfig.model_validate(
+        {
+            "type": "streamableHttp",
+            "url": "https://agent.robinhood.com/mcp/trading",
+            "auth": {"type": "oauth", "scopes": ["trading.read"]},
+            "enabledTools": ["*"],
+        }
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.tools.mcp"):
+        tools = mcp.build_mcp_tool_wrappers(
+            "robinhood",
+            server,
+            client_factory=_fake_mcp_factory(()),
+        )
+
+    assert tools == []
+    assert "wildcard enabledTools" in caplog.text
+    assert "safe read-only allowlist" in caplog.text
+    assert "get_portfolio" in caplog.text
+    assert ROBINHOOD_AGENT_CONFIG_PATH in caplog.text
 
 
 # ---------------------------------------------------------------------------

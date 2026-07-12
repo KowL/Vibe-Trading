@@ -20,6 +20,9 @@ _SDK_CONNECTOR_MODULES = {
     "okx": "src.trading.connectors.okx.sdk",
     "binance": "src.trading.connectors.binance.sdk",
     "futu": "src.trading.connectors.futu.sdk",
+    "dhan": "src.trading.connectors.dhan.sdk",
+    "shoonya": "src.trading.connectors.shoonya.sdk",
+    "trading212": "src.trading.connectors.trading212.sdk",
 }
 
 
@@ -104,7 +107,9 @@ def get_open_orders(
         module = _sdk_module(profile.connector)
         return _with_profile(
             profile,
-            module.get_open_orders(module.build_config(profile.config, overrides), include_executions=include_executions),
+            module.get_open_orders(
+                module.build_config(profile.config, overrides), include_executions=include_executions
+            ),
         )
     return _call_remote(profile, "orders", {})
 
@@ -202,6 +207,7 @@ _CONNECTOR_INSTRUMENT = {
     "tiger": ("equity", None),
     "longbridge": ("equity", None),
     "futu": ("equity", None),
+    "trading212": ("equity", None),
 }
 
 
@@ -255,6 +261,8 @@ def place_order(
     """
     profile = profile_by_id(profile_id)
     if profile.transport != "broker_sdk":
+        return _unsupported(profile, "orders.place")
+    if profile.readonly:
         return _unsupported(profile, "orders.place")
 
     module = _sdk_module(profile.connector)
@@ -313,6 +321,8 @@ def cancel_order(
     """
     profile = profile_by_id(profile_id)
     if profile.transport != "broker_sdk":
+        return _unsupported(profile, "orders.cancel")
+    if profile.readonly:
         return _unsupported(profile, "orders.cancel")
     module = _sdk_module(profile.connector)
     config = module.build_config(profile.config, overrides)

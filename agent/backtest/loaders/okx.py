@@ -5,15 +5,20 @@ Supports 1m/5m/15m/30m/1H/4H/1D.
 Up to 300 bars per request; paginates with ``after`` for longer history.
 """
 
-import os
+import logging
 import time
 from typing import Dict, List, Optional
 
 import pandas as pd
 import requests
 
+logger = logging.getLogger(__name__)
+
 from backtest.loaders.base import (
+    cached_loader_fetch,
     check_budget,
+    positive_env_float,
+    positive_env_int,
     retry_with_budget,
     validate_date_range,
 )
@@ -25,8 +30,8 @@ _MAX_PER_PAGE = 300
 # budget, so a transient blip dropped the whole symbol and a slow tier
 # could stall ~max_pages*timeout. Bound it like the ccxt loader; retry
 # scheduling is delegated to :mod:`backtest.loaders.base`.
-_OKX_TIMEOUT = int(os.getenv("OKX_TIMEOUT_S", "15"))
-_OKX_FETCH_BUDGET_S = float(os.getenv("OKX_FETCH_BUDGET_S", "60"))
+_OKX_TIMEOUT = positive_env_int("OKX_TIMEOUT_S", 15)
+_OKX_FETCH_BUDGET_S = positive_env_float("OKX_FETCH_BUDGET_S", 60.0)
 
 
 @register
@@ -50,8 +55,9 @@ class DataLoader:
         codes: List[str],
         start_date: str,
         end_date: str,
-        fields: Optional[List[str]] = None,
+        *,
         interval: str = "1D",
+        fields: Optional[List[str]] = None,
     ) -> Dict[str, pd.DataFrame]:
         """Fetch crypto OHLCV via OKX public API.
 
@@ -68,11 +74,11 @@ class DataLoader:
         validate_date_range(start_date, end_date)
 
         if fields:
-            print(f"[WARN] OKX ignores extra fields: {fields}")
+            logger.warning("OKX ignores extra fields: %s", fields)
 
         valid_intervals = {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
         if interval not in valid_intervals:
-            print(f"[WARN] unsupported OKX interval {interval}, using 1D")
+            logger.warning("unsupported OKX interval %s, using 1D", interval)
             interval = "1D"
 
         codes = [c.replace("/", "-").upper() for c in codes]
@@ -85,11 +91,21 @@ class DataLoader:
         result: Dict[str, pd.DataFrame] = {}
         for symbol in codes:
             try:
-                df = self._fetch_candles(symbol, start_ts, end_ts, interval, max_pages)
+                df = cached_loader_fetch(
+                    source=self.name,
+                    symbol=symbol,
+                    timeframe=interval,
+                    start_date=start_date,
+                    end_date=end_date,
+                    fields=None,
+                    fetch=lambda symbol=symbol: self._fetch_candles(
+                        symbol, start_ts, end_ts, interval, max_pages
+                    ),
+                )
                 if df is not None and not df.empty:
                     result[symbol] = df
             except Exception as exc:
-                print(f"[WARN] failed to fetch {symbol}: {exc}")
+                logger.warning("failed to fetch %s: %s", symbol, exc)
         return result
 
     def _fetch_candles(
@@ -149,7 +165,7 @@ class DataLoader:
             after = str(oldest_ts)
 
         if not all_rows:
-            print(f"[WARN] OKX empty response: {inst_id}")
+            logger.warning("OKX empty response: %s", inst_id)
             return None
 
         columns = ["ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"]

@@ -1,5 +1,10 @@
 # Adapted from microsoft/qlib@d5379c520f66a39953bad76234a7019a72796fd0:qlib/contrib/data/handler.py
 # (Apache-2.0). Copyright (c) Microsoft Corporation.
+# ============================================================
+# 中文名称: 涨跌天数差 20日
+# 简要说明: CNTP_20 - CNTN_20，20日内上涨天数与下跌天数之差。
+# 典型用途: 综合衡量20日内的涨跌方向，正值表示多头天数占优。
+# ============================================================
 """qlib158 CNTD20: formula = \\mathrm{CNTP}_20 - \\mathrm{CNTN}_20."""
 from __future__ import annotations
 
@@ -10,7 +15,7 @@ __alpha_meta__ = {
     'theme': ['reversal'],
     'formula_latex': '\\\\mathrm{CNTP}_20 - \\\\mathrm{CNTN}_20',
     'columns_required': ['close'],
-    'universe': ['equity_us', 'equity_cn', 'equity_hk'],
+    'universe': ['equity_us', 'equity_cn', 'equity_hk', 'equity_in'],
     'frequency': ['1d'],
     'decay_horizon': 20,
     'min_warmup_bars': 20,

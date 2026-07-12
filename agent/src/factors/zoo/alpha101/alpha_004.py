@@ -1,3 +1,9 @@
+
+# ============================================================
+# 中文名称: Alpha #4 - 条件收益指示
+# 简要说明: (-1 * Ts_Rank(rank(low), 9))，对最低价的9日时间序列排名取负。
+# 典型用途: 当价格持续创新低时该值较低，用于超跌反弹策略。
+# ============================================================
 """Kakushadze Alpha #4.
 
 Formula (paper appendix): -1 * Ts_Rank(rank(low), 9)
@@ -37,7 +43,7 @@ __alpha_meta__ = {
     'columns_required': ['low', 'close'],
     'extras_required': [],
     'requires_sector': False,
-    'universe': ['equity_us'],
+    'universe': ['equity_us', 'equity_in'],
     'frequency': ['1D'],
     'decay_horizon': 5,
     'min_warmup_bars': 9,

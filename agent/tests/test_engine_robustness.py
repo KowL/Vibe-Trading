@@ -355,6 +355,32 @@ class TestBacktestConfigSchema:
                 source="bloomberg",
             )
 
+    def test_mootdx_and_futu_sources_accepted(self) -> None:
+        """mootdx and futu are registered loaders, so config validation must
+        accept them. Regression: ``_VALID_SOURCES`` drifted and rejected both
+        even though the agent-facing backtest tool already allowed them."""
+        for src in ("mootdx", "futu"):
+            c = BacktestConfigSchema(
+                codes=["000001.SZ"],
+                start_date="2025-01-01",
+                end_date="2025-06-01",
+                source=src,
+            )
+            assert c.source == src
+
+    def test_valid_sources_covers_all_registered_loaders(self) -> None:
+        """Every registered loader name must be an accepted config source, so a
+        new loader can never be silently rejected by the config schema."""
+        from backtest.loaders.registry import (
+            LOADER_REGISTRY,
+            VALID_SOURCES,
+            _ensure_registered,
+        )
+
+        _ensure_registered()
+        missing = set(LOADER_REGISTRY) - VALID_SOURCES
+        assert not missing, f"loaders missing from VALID_SOURCES: {missing}"
+
     def test_extra_fields_allowed(self) -> None:
         """Config may contain engine-specific fields not in the schema."""
         c = BacktestConfigSchema(
@@ -491,3 +517,62 @@ class TestFullBacktestRobustness:
         engine = ChinaAEngine({"initial_cash": 1_000_000})
         engine._execute_bars(dates, data_map, close_df, target_pos, valid_codes)
         assert len(engine.equity_snapshots) == 20
+
+
+# ---------------------------------------------------------------------------
+# 6. Validation artifact — write must not assume artifacts/ already exists
+# ---------------------------------------------------------------------------
+
+
+class TestValidationArtifactDir:
+    def test_validation_json_written_when_artifacts_dir_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """Enabling validation must not crash when run_dir/artifacts is absent.
+
+        The validation.json write (step 7) runs before _write_artifacts()
+        (step 8) creates run_dir/artifacts, so the write must create the
+        directory itself. Regression test for the FileNotFoundError hit when
+        run_dir has no pre-created artifacts/ (e.g. a swarm agent workspace).
+        """
+        dates = pd.bdate_range("2024-04-01", periods=3)
+        bars = pd.DataFrame(
+            {
+                "open": [10.0, 11.0, 12.0],
+                "high": [10.5, 11.5, 12.5],
+                "low": [9.5, 10.5, 11.5],
+                "close": [10.2, 11.2, 12.2],
+                "volume": [1000, 1100, 1200],
+            },
+            index=dates,
+        )
+
+        class FakeLoader:
+            def fetch(self, *args, **kwargs):
+                return {"000001.SZ": bars.copy()}
+
+        class SignalEngine:
+            def generate(self, data_map):
+                return {"000001.SZ": pd.Series(1.0, index=data_map["000001.SZ"].index)}
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        assert not (run_dir / "artifacts").exists()
+
+        engine = ChinaAEngine({"initial_cash": 1_000_000})
+        metrics = engine.run_backtest(
+            {
+                "codes": ["000001.SZ"],
+                "start_date": "2024-04-01",
+                "end_date": "2024-04-30",
+                "source": "tushare",
+                "initial_cash": 1_000_000,
+                "validation": {"bootstrap": {"n_bootstrap": 20, "seed": 1}},
+            },
+            FakeLoader(),
+            SignalEngine(),
+            run_dir,
+        )
+
+        assert "validation" in metrics
+        assert (run_dir / "artifacts" / "validation.json").exists()

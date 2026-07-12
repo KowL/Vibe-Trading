@@ -1,3 +1,9 @@
+
+# ============================================================
+# 中文名称: Kakushadze Alpha #44
+# 简要说明: Kakushadze (2015) 101 Formulaic Alphas 中的第44号因子，详见公式定义。
+# 典型用途: 作为多因子模型中的alpha信号，经中性化处理后用于选股或股指期货交易。
+# ============================================================
 """Kakushadze Alpha #44.
 
 Formula (paper appendix): -1 * correlation(high, rank(volume), 5)
@@ -37,7 +43,7 @@ __alpha_meta__ = {
     'columns_required': ['high', 'volume', 'close'],
     'extras_required': [],
     'requires_sector': False,
-    'universe': ['equity_us'],
+    'universe': ['equity_us', 'equity_in'],
     'frequency': ['1D'],
     'decay_horizon': 5,
     'min_warmup_bars': 5,

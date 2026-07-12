@@ -14,7 +14,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, model_validator, field_validator
@@ -28,10 +28,11 @@ except ImportError:
 from backtest.loaders.registry import (
     FALLBACK_CHAINS,
     LOADER_REGISTRY,
+    VALID_SOURCES,
     get_loader_cls_with_fallback,
     resolve_loader,
 )
-from backtest.loaders.base import NoAvailableSourceError
+from backtest.loaders.base import NoAvailableSourceError, validate_ohlc
 # Symbol classification lives in ``_market_hooks`` so runner.py and
 # composite.py share a single source of truth (audit-2026-05-18 B1+C1+C2).
 # ``_detect_market`` is also re-exported here for back-compat with
@@ -47,7 +48,8 @@ logger = logging.getLogger(__name__)
 
 _VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
 _VALID_ENGINES = {"daily", "options"}
-_VALID_SOURCES = {"tushare", "okx", "yfinance", "akshare", "ccxt", "auto"}
+_PRICE_PANEL_COLUMNS = ("open", "high", "low", "close", "volume", "vwap", "amount")
+_FUND_PREFIX = "fund:"
 
 
 class BacktestConfigSchema(BaseModel):
@@ -62,6 +64,7 @@ class BacktestConfigSchema(BaseModel):
     interval: str = "1D"
     engine: str = "daily"
     fundamental_fields: Optional[Dict[str, List[str]]] = None
+    event_feeds: Optional[List[Dict[str, Any]]] = None
 
     @field_validator("codes")
     @classmethod
@@ -98,8 +101,8 @@ class BacktestConfigSchema(BaseModel):
     @field_validator("source")
     @classmethod
     def valid_source(cls, v: str) -> str:
-        if v not in _VALID_SOURCES:
-            raise ValueError(f"unsupported source {v!r}, must be one of {_VALID_SOURCES}")
+        if v not in VALID_SOURCES:
+            raise ValueError(f"unsupported source {v!r}, must be one of {VALID_SOURCES}")
         return v
 
     @field_validator("fundamental_fields")
@@ -115,6 +118,21 @@ class BacktestConfigSchema(BaseModel):
                 raise ValueError("fundamental_fields table names must be non-empty strings")
             if any(not field.strip() for field in fields):
                 raise ValueError("fundamental_fields field names must be non-empty strings")
+        return v
+
+    @field_validator("event_feeds")
+    @classmethod
+    def valid_event_feeds(cls, v: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+        if v is None:
+            return v
+        for entry in v:
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    "each event_feeds entry must be an object with name/route_template/event_type"
+                )
+            for key in ("name", "route_template", "event_type"):
+                if not str(entry.get(key, "")).strip():
+                    raise ValueError(f"event_feeds entry missing required field: {key}")
         return v
 
     @model_validator(mode="after")
@@ -284,6 +302,7 @@ _MARKET_TO_SOURCE = {
     "a_share": "tushare",
     "us_equity": "yfinance",
     "hk_equity": "yfinance",
+    "india_equity": "yahoo",
     "crypto": "okx",
     "futures": "tushare",
     "fund": "tushare",
@@ -368,6 +387,242 @@ def _normalize_codes(codes: List[str], source: str) -> List[str]:
     if source in ("okx", "ccxt"):
         return [c.replace("/", "-").upper() for c in codes]
     return codes
+
+
+def _columns_required_from_factor_spec(spec: Any) -> list[str]:
+    """Extract ``columns_required`` from supported factor spec shapes.
+
+    Args:
+        spec: Factor metadata as a dict, an Alpha-like object with ``meta``, an
+            object with ``columns_required``, or a raw string alpha id.
+
+    Returns:
+        Declared panel columns, or an empty list when the shape has none.
+    """
+    if isinstance(spec, dict):
+        meta = spec.get("meta")
+        if isinstance(meta, dict):
+            return [str(c) for c in meta.get("columns_required", [])]
+        return [str(c) for c in spec.get("columns_required", [])]
+    meta = getattr(spec, "meta", None)
+    if isinstance(meta, dict):
+        return [str(c) for c in meta.get("columns_required", [])]
+    columns = getattr(spec, "columns_required", None)
+    if columns is not None:
+        return [str(c) for c in columns]
+    return []
+
+
+def _selected_factor_specs(config: dict) -> list[Any]:
+    """Return selected factor metadata configured for the run.
+
+    The current runner has no dedicated factor-zoo execution path, so this
+    accepts the shapes used by callers that already know factor metadata
+    (``selected_factors``/``factors``/``alpha_metas``) and alpha-id lists that
+    can be resolved through the registry.
+
+    Args:
+        config: Backtest config.
+
+    Returns:
+        Factor specs or metadata dictionaries.
+    """
+    specs: list[Any] = []
+    for key in ("selected_factors", "factors", "alpha_metas"):
+        raw = config.get(key)
+        if isinstance(raw, list):
+            specs.extend(raw)
+        elif raw:
+            specs.append(raw)
+
+    alpha_ids: list[str] = []
+    for key in ("alpha_ids", "factor_ids", "alphas"):
+        raw = config.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            alpha_ids.append(raw)
+        else:
+            alpha_ids.extend(str(item) for item in raw)
+
+    if alpha_ids:
+        from src.factors.registry import get_default_registry
+
+        registry = get_default_registry()
+        for alpha_id in alpha_ids:
+            try:
+                specs.append(registry.get(alpha_id).meta)
+            except KeyError:
+                logger.warning("selected alpha_id %r is not registered; skipping", alpha_id)
+    return specs
+
+
+def _fund_columns_required(selected_factors: Iterable[Any]) -> list[str]:
+    """Collect requested ``fund:*`` panel columns from selected factors.
+
+    Args:
+        selected_factors: Factor metadata/spec objects.
+
+    Returns:
+        Stable, de-duplicated ``fund:*`` column names.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for spec in selected_factors:
+        for column in _columns_required_from_factor_spec(spec):
+            if not column.startswith(_FUND_PREFIX) or column in seen:
+                continue
+            seen.add(column)
+            out.append(column)
+    return out
+
+
+def _build_price_panel(data_map: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Convert ``code -> OHLCV frame`` rows into the factor panel shape.
+
+    Args:
+        data_map: Backtest loader output.
+
+    Returns:
+        ``column -> dates x symbols`` panel for price columns present in the
+        data map.
+    """
+    panel: dict[str, pd.DataFrame] = {}
+    for column in _PRICE_PANEL_COLUMNS:
+        series_by_symbol = {
+            symbol: frame[column]
+            for symbol, frame in data_map.items()
+            if column in frame.columns
+        }
+        if series_by_symbol:
+            panel[column] = pd.DataFrame(series_by_symbol)
+    return panel
+
+
+def _nan_fundamental_frame(
+    index: pd.DatetimeIndex,
+    symbols: list[str],
+) -> pd.DataFrame:
+    """Build an all-NaN fundamental panel frame."""
+    return pd.DataFrame(float("nan"), index=index, columns=symbols)
+
+
+def _inject_fundamental_panel(
+    panel: dict[str, pd.DataFrame],
+    *,
+    symbols: list[str],
+    fund_columns: Iterable[str],
+    start: str,
+    end: str,
+    freq: str = "ttm",
+    pit: bool = True,
+    source: str = "auto",
+    index: pd.DatetimeIndex | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Inject required fundamental fields into a factor panel.
+
+    Args:
+        panel: Existing factor panel keyed by column name.
+        symbols: Symbols to load.
+        fund_columns: Requested ``fund:*`` columns.
+        start: Start date string.
+        end: End date string.
+        freq: Fundamental frequency. Defaults to ``ttm``.
+        pit: Whether point-in-time loading is enforced.
+        source: Fundamental data source route.
+        index: Optional price index to align to. Defaults to ``panel["close"]``.
+
+    Returns:
+        The same panel dictionary with ``fund:<field>`` frames added.
+    """
+    fields = [column[len(_FUND_PREFIX):] for column in fund_columns if column.startswith(_FUND_PREFIX)]
+    fields = list(dict.fromkeys(fields))
+    if not fields:
+        return panel
+
+    price_index = index
+    if price_index is None:
+        close = panel.get("close")
+        price_index = close.index if close is not None else pd.DatetimeIndex([])
+
+    try:
+        from backtest.loaders.fundamentals_loader import load_fundamental_panel
+
+        loaded = load_fundamental_panel(
+            symbols=symbols,
+            fields=fields,
+            start=start,
+            end=end,
+            freq=freq,
+            pit=pit,
+            source=source,
+            index=price_index,
+        )
+    except Exception as exc:  # noqa: BLE001 - data-source failure must not kill backtest
+        logger.warning(
+            "fundamental panel load failed for fields=%s symbols=%s: %s; injecting NaN frames",
+            fields,
+            symbols,
+            exc,
+            exc_info=True,
+        )
+        loaded = {}
+
+    for field in fields:
+        frame = loaded.get(field)
+        if not isinstance(frame, pd.DataFrame):
+            frame = _nan_fundamental_frame(price_index, symbols)
+        else:
+            frame = frame.reindex(index=price_index, columns=symbols)
+        panel[f"{_FUND_PREFIX}{field}"] = frame
+    return panel
+
+
+def _project_panel_fields_to_data_map(
+    data_map: dict[str, pd.DataFrame],
+    panel: dict[str, pd.DataFrame],
+    fund_columns: Iterable[str],
+) -> dict[str, pd.DataFrame]:
+    """Copy injected panel fields back to per-symbol backtest frames."""
+    out = {symbol: frame.copy() for symbol, frame in data_map.items()}
+    for column in fund_columns:
+        frame = panel.get(column)
+        if frame is None:
+            continue
+        for symbol, symbol_frame in out.items():
+            if symbol in frame.columns:
+                symbol_frame[column] = frame[symbol].reindex(symbol_frame.index)
+            else:
+                symbol_frame[column] = float("nan")
+    return out
+
+
+def _maybe_inject_fundamentals_for_factor_panel(
+    data_map: dict[str, pd.DataFrame],
+    config: dict,
+) -> dict[str, pd.DataFrame]:
+    """Inject ``fund:*`` factor dependencies when selected factors request them."""
+    selected_factors = _selected_factor_specs(config)
+    fund_columns = _fund_columns_required(selected_factors)
+    if not fund_columns:
+        return data_map
+
+    panel = _build_price_panel(data_map)
+    close = panel.get("close")
+    price_index = close.index if close is not None else pd.DatetimeIndex([])
+    symbols = list(data_map)
+    _inject_fundamental_panel(
+        panel,
+        symbols=symbols,
+        fund_columns=fund_columns,
+        start=config.get("start_date", ""),
+        end=config.get("end_date", ""),
+        freq="ttm",
+        pit=True,
+        source="auto",
+        index=price_index,
+    )
+    return _project_panel_fields_to_data_map(data_map, panel, fund_columns)
 
 
 # --- Main entry ---
@@ -459,6 +714,12 @@ def main(run_dir: Path) -> None:
             fields=config.get("extra_fields") or None,
             interval=interval,
         )
+        if data_map and len(data_map) < len(codes):
+            missing = set(codes) - set(data_map.keys())
+            logger.warning(
+                "source=%s returned data for %d/%d symbols; missing: %s",
+                source, len(data_map), len(codes), missing,
+            )
         # Runtime fallback: try next sources in chain when primary returns empty
         if not data_map and codes:
             market = _detect_market(codes[0])
@@ -478,9 +739,14 @@ def main(run_dir: Path) -> None:
                     source = fb_name
                     loader = fb_loader
                     break
+
+    # Loader-boundary OHLC sanity for every source, centralized at the one
+    # point all fetch paths converge (auto / single / runtime fallback).
+    data_map = _sanitize_data_map(data_map)
     if not data_map:
         print(json.dumps({"error": "No data fetched"}))
         sys.exit(1)
+    data_map = _maybe_inject_fundamentals_for_factor_panel(data_map, config)
 
     if source == "auto":
         config["_run_card_effective_sources"] = sorted(_group_codes_by_source(codes))
@@ -549,6 +815,13 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
     if "forex" in markets:
         from backtest.engines.forex import ForexEngine
         return ForexEngine(config)
+
+    # India equity routing — must precede source-based routing because India's
+    # effective source is ``yahoo``, which has no Wave-1 branch and would
+    # otherwise fall through to the crypto default.
+    if "india_equity" in markets:
+        from backtest.engines.india_equity import IndiaEquityEngine
+        return IndiaEquityEngine(config)
 
     # Original routing (Wave 1)
     if source in ("okx", "ccxt"):
@@ -637,6 +910,26 @@ def _fetch_auto(codes: List[str], config: dict, interval: str = "1D") -> dict:
         merged.update(result)
 
     return merged
+
+
+def _sanitize_data_map(data_map: dict) -> dict:
+    """Drop structurally-invalid OHLC bars from every fetched frame.
+
+    Each loader only drops NaN rows, so a bar that violates the OHLC
+    invariants (``high < low``, a non-positive price, or a high/low that fails
+    to bracket open/close) can still reach the backtest and surface as NaN/inf
+    metrics. Applying :func:`validate_ohlc` here — the single point every
+    fetched map converges through — guards every source uniformly (``auto``,
+    single-source, runtime fallback, and any future loader), so the per-loader
+    checks no longer have to be added one at a time.
+
+    Args:
+        data_map: ``code -> DataFrame`` map as returned by a loader fetch.
+
+    Returns:
+        The same mapping with each frame's invalid bars removed.
+    """
+    return {code: validate_ohlc(frame) for code, frame in data_map.items()}
 
 
 class _AutoLoader:

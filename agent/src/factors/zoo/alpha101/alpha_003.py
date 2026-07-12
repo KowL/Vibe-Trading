@@ -1,3 +1,9 @@
+
+# ============================================================
+# 中文名称: Alpha #3 - 量价滞后相关
+# 简要说明: (-1 * correlation(rank(open), rank(volume), 10))，开盘价与成交量的秩相关系数取负。
+# 典型用途: 开盘阶段量价背离时可能预示日内反转，用于日内交易信号。
+# ============================================================
 """Kakushadze Alpha #3.
 
 Formula (paper appendix): -1 * correlation(rank(open), rank(volume), 10)
@@ -37,7 +43,7 @@ __alpha_meta__ = {
     'columns_required': ['open', 'volume', 'close'],
     'extras_required': [],
     'requires_sector': False,
-    'universe': ['equity_us'],
+    'universe': ['equity_us', 'equity_in'],
     'frequency': ['1D'],
     'decay_horizon': 5,
     'min_warmup_bars': 10,

@@ -20,6 +20,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -48,6 +50,7 @@ from rich.table import Table
 from rich.text import Text
 
 from cli.theme import get_console
+from src.config.accessor import get_env_config, reset_env_config
 
 console = get_console()
 AGENT_DIR = Path(__file__).resolve().parents[1]
@@ -60,6 +63,8 @@ EXIT_SUCCESS = 0
 EXIT_RUN_FAILED = 1
 EXIT_USAGE_ERROR = 2
 RICH_TAG_PATTERN = re.compile(r"\[/?[^\]]+\]")
+SWARM_RUN_USAGE = """--swarm-run PRESET '{"k":"v"}'"""
+SWARM_RUN_VARS_PREVIEW_CHARS = 80
 
 from cli._version import __version__ as _VERSION  # noqa: E402 — single source of truth
 
@@ -69,6 +74,47 @@ if TYPE_CHECKING:
 # Agent color assignments for swarm display
 _AGENT_STYLES = ["cyan", "magenta", "green", "yellow", "blue", "bright_red", "bright_cyan", "bright_magenta"]
 _agent_color_map: dict[str, str] = {}
+
+
+def _truncate_swarm_vars_preview(value: str) -> str:
+    """Return a compact preview for a CLI JSON token."""
+    if len(value) <= SWARM_RUN_VARS_PREVIEW_CHARS:
+        return value
+    return value[: SWARM_RUN_VARS_PREVIEW_CHARS - 3] + "..."
+
+
+def _print_swarm_vars_json_error(vars_json: str, exc: json.JSONDecodeError) -> None:
+    """Print actionable JSON diagnostics for ``--swarm-run`` vars."""
+    preview = rich_escape(_truncate_swarm_vars_preview(vars_json))
+    console.print(
+        "[red]Invalid JSON for --swarm-run VARS.[/red]\n"
+        f"Offending string: {preview}\n"
+        f"JSON parse error: {rich_escape(str(exc))}\n"
+        f"Correct usage: {SWARM_RUN_USAGE}\n"
+        "shell quoting is the usual culprit; wrap the JSON in single quotes."
+    )
+
+
+def _parse_swarm_run_args(values: list[str]) -> tuple[str, Optional[str]] | None:
+    """Validate ``--swarm-run`` values before starting the swarm."""
+    if len(values) > 2:
+        extras = ", ".join(rich_escape(repr(token)) for token in values[2:])
+        console.print(
+            "[red]Invalid --swarm-run arguments:[/red] "
+            f"unexpected extra token(s): {extras}\n"
+            f"Correct usage: {SWARM_RUN_USAGE}"
+        )
+        return None
+
+    preset = values[0]
+    vars_json = values[1] if len(values) > 1 else None
+    if vars_json:
+        try:
+            json.loads(vars_json)
+        except json.JSONDecodeError as exc:
+            _print_swarm_vars_json_error(vars_json, exc)
+            return None
+    return preset, vars_json
 
 _HAS_PROMPT_TOOLKIT = False
 try:
@@ -106,8 +152,9 @@ def _build_status_parts(stats: _SessionStats) -> list[str]:
     Returns:
         List of status text segments.
     """
-    provider = os.getenv("LANGCHAIN_PROVIDER", "")
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "")
+    _cfg = get_env_config()
+    provider = _cfg.llm.langchain_provider
+    model = _cfg.llm.langchain_model_name
     model_short = model.split("/")[-1] if "/" in model else model
     label = f"{provider}/{model_short}" if provider else model_short or "unknown"
 
@@ -353,6 +400,7 @@ def _provider_key_env(provider: str | None) -> str | None:
     """Return the credential environment variable for a provider."""
     return {
         "openrouter": "OPENROUTER_API_KEY",
+        "requesty": "REQUESTY_API_KEY",
         "openai": "OPENAI_API_KEY",
         "deepseek": "DEEPSEEK_API_KEY",
         "gemini": "GEMINI_API_KEY",
@@ -371,6 +419,7 @@ def _provider_base_env(provider: str | None) -> str | None:
     """Return the base URL environment variable for a provider."""
     return {
         "openrouter": "OPENROUTER_BASE_URL",
+        "requesty": "REQUESTY_BASE_URL",
         "openai": "OPENAI_BASE_URL",
         "openai-codex": "OPENAI_CODEX_BASE_URL",
         "deepseek": "DEEPSEEK_BASE_URL",
@@ -863,7 +912,7 @@ def _format_tool_result_preview(tool: str, status: str, preview: str) -> str:
 # protected ``loop.py``.
 
 _PROPOSAL_TOOL_NAME = "propose_mandate_profiles"
-_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-zA-Z]+)"')
+_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-f]{32})"')
 
 
 def _load_full_proposal(proposal_id: str) -> Optional[Dict[str, Any]]:
@@ -1394,7 +1443,15 @@ def cmd_run(prompt: str, max_iter: int, *, json_mode: bool = False, no_rich: boo
 def _build_history_from_trace(run_dir: Path) -> List[Dict[str, str]]:
     """Build conversation history from trace.jsonl."""
     from src.agent.trace import TraceWriter
-    entries = TraceWriter.read(run_dir)
+
+    trace_dir = TraceWriter.find_trace_dir(run_dir.name, runs_dir=RUNS_DIR, sessions_dir=SESSIONS_DIR)
+    if trace_dir is None:
+        return []
+    entries = TraceWriter.read(
+        trace_dir,
+        resolve_offloads=True,
+        resolve_fields={"prompt", "content"},
+    )
     history: List[Dict[str, str]] = []
     for e in entries:
         if e.get("type") == "start" and e.get("prompt"):
@@ -1414,12 +1471,15 @@ def cmd_continue(
 ) -> int:
     """Continue an existing run."""
     run_dir = RUNS_DIR / run_id
-    if not run_dir.exists():
+    session_trace_dir = SESSIONS_DIR / run_id
+    if not run_dir.exists() and not session_trace_dir.exists():
         if no_rich:
             print(f"Run {run_id} not found")
             return EXIT_USAGE_ERROR
         console.print(f"[red]Run {run_id} not found[/red]")
         return EXIT_USAGE_ERROR
+    if not run_dir.exists():
+        run_dir.mkdir(parents=True, exist_ok=True)
 
     history = _build_history_from_trace(run_dir)
     if not json_mode and no_rich:
@@ -1480,10 +1540,11 @@ def _build_welcome_panel(term_width: Optional[int] = None) -> Panel:
     term_width = term_width or _terminal_width()
     compact = term_width < 64
     widths = _welcome_widths(term_width)
-    provider = os.getenv("LANGCHAIN_PROVIDER", "(not set)")
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "(not set)")
+    _cfg = get_env_config()
+    provider = _cfg.llm.langchain_provider or "(not set)"
+    model = _cfg.llm.langchain_model_name or "(not set)"
     key_env = _provider_key_env(provider)
-    key_value = os.getenv(key_env or "")
+    key_value = os.getenv(key_env or "")  # noqa: env-gate — dynamic provider key display
     credential_ready = provider in {"ollama", "openai-codex"} or bool(key_value)
     key_state = "READY" if credential_ready else "MISSING"
     recent_runs = len([d for d in RUNS_DIR.iterdir() if d.is_dir()]) if RUNS_DIR.exists() else 0
@@ -1668,12 +1729,13 @@ def _show_settings() -> None:
     term_width = _terminal_width()
     compact = term_width < 104
     value_limit = max(18, min(56, term_width - 28))
-    provider = os.getenv("LANGCHAIN_PROVIDER", "(not set)")
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "(not set)")
+    _cfg = get_env_config()
+    provider = _cfg.llm.langchain_provider or "(not set)"
+    model = _cfg.llm.langchain_model_name or "(not set)"
     provider_key_env = _provider_key_env(provider)
     provider_base_env = _provider_base_env(provider)
-    provider_key = os.getenv(provider_key_env or "")
-    provider_base_url = os.getenv(provider_base_env or "") or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE") or "(not set)"
+    provider_key = os.getenv(provider_key_env or "")  # noqa: env-gate — dynamic provider key display
+    provider_base_url = os.getenv(provider_base_env or "") or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE") or "(not set)"  # noqa: env-gate — dynamic provider URL display
 
     provider_table = Table.grid(expand=True)
     provider_table.add_column(width=12, style="dim")
@@ -1685,9 +1747,9 @@ def _show_settings() -> None:
     runtime_table = Table.grid(expand=True)
     runtime_table.add_column(width=13, style="dim")
     runtime_table.add_column(ratio=1)
-    runtime_table.add_row("Temperature", os.getenv("LANGCHAIN_TEMPERATURE", "0.0"))
-    runtime_table.add_row("Timeout", os.getenv("TIMEOUT_SECONDS", "2400") + "s")
-    runtime_table.add_row("Retries", os.getenv("MAX_RETRIES", "(not set)"))
+    runtime_table.add_row("Temperature", str(_cfg.llm.langchain_temperature))
+    runtime_table.add_row("Timeout", str(_cfg.llm.timeout_seconds) + "s")
+    runtime_table.add_row("Retries", str(_cfg.llm.max_retries))
 
     credential_table = Table.grid(expand=True)
     credential_table.add_column(width=21, style="dim")
@@ -1702,7 +1764,7 @@ def _show_settings() -> None:
     else:
         credential_table.add_row("Provider key", "(unknown provider)")
         credential_ready = False
-    credential_table.add_row("TUSHARE_TOKEN", "***" if os.getenv("TUSHARE_TOKEN") else "(optional)")
+    credential_table.add_row("TUSHARE_TOKEN", "***" if _cfg.data.tushare_token else "(optional)")
 
     panels = [
         Panel(provider_table, title=f"Provider {_state_badge(provider if provider != '(not set)' else None)}", border_style="cyan", padding=(0, 1)),
@@ -2056,7 +2118,7 @@ class _SwarmDashboard:
         return table
 
 
-def cmd_swarm_run_live(preset: str, vars_json: Optional[str] = None) -> None:
+def cmd_swarm_run_live(preset: str, vars_json: Optional[str] = None) -> Optional[int]:
     """Run a swarm preset with Rich Live dashboard."""
     from rich.live import Live
     from src.config import load_swarm_agent_config
@@ -2069,8 +2131,8 @@ def cmd_swarm_run_live(preset: str, vars_json: Optional[str] = None) -> None:
         try:
             user_vars = json.loads(vars_json)
         except json.JSONDecodeError as exc:
-            console.print(f"[red]Invalid JSON: {exc}[/red]")
-            return
+            _print_swarm_vars_json_error(vars_json, exc)
+            return EXIT_USAGE_ERROR
 
     store = SwarmStore(base_dir=SWARM_DIR)
     agent_config = load_swarm_agent_config()
@@ -2222,7 +2284,12 @@ def cmd_show(run_id: str) -> None:
         lines.extend(f"  {k}: {v}" for k, v in metrics.items())
 
     from src.agent.trace import TraceWriter
-    entries = TraceWriter.read(run_dir)
+    trace_dir = TraceWriter.find_trace_dir(run_id, runs_dir=RUNS_DIR, sessions_dir=SESSIONS_DIR)
+    entries = (
+        TraceWriter.read(trace_dir, resolve_offloads=True, resolve_fields={"content"})
+        if trace_dir
+        else []
+    )
     answers = [e["content"] for e in entries if e.get("type") == "answer" and e.get("content")]
     if answers:
         summary = answers[-1][:200]
@@ -2281,12 +2348,16 @@ def cmd_trace(run_id: str) -> None:
     """Replay trace.jsonl to show full execution."""
     from src.agent.trace import TraceWriter
 
-    run_dir = RUNS_DIR / run_id
-    if not run_dir.exists():
-        console.print(f"[red]{run_id} not found[/red]")
+    trace_dir = TraceWriter.find_trace_dir(run_id, runs_dir=RUNS_DIR, sessions_dir=SESSIONS_DIR)
+    if trace_dir is None:
+        console.print(f"[red]{run_id}/trace.jsonl not found[/red]")
         return
 
-    entries = TraceWriter.read(run_dir)
+    entries = TraceWriter.read(
+        trace_dir,
+        resolve_offloads=True,
+        resolve_fields={"prompt", "content", "summary"},
+    )
     if not entries:
         console.print(f"[red]{run_id}/trace.jsonl is empty or missing[/red]")
         return
@@ -2308,7 +2379,7 @@ def cmd_trace(run_id: str) -> None:
         elif etype == "tool_call":
             tool = entry.get("tool", "")
             args = entry.get("args", {})
-            args_str = ", ".join(f"{k}={v[:40]}" for k, v in args.items()) if args else ""
+            args_str = ", ".join(f"{k}={str(v)[:40]}" for k, v in args.items()) if args else ""
             console.print(f"[dim]{ts_str}[/dim] {iter_tag}[cyan]\u25b6 {tool}[/cyan]({args_str})")
         elif etype == "tool_result":
             tool = entry.get("tool", "")
@@ -2317,13 +2388,21 @@ def cmd_trace(run_id: str) -> None:
             ok = status == "ok"
             mark = "\u2713" if ok else "\u2717"
             color = "green" if ok else "red"
-            preview = entry.get("preview", "")[:80]
-            console.print(f"[dim]{ts_str}[/dim] {iter_tag}[{color}]{mark} {tool}[/{color}] [dim]{elapsed}ms[/dim]  {preview}")
+            preview = (entry.get("preview") or entry.get("result_preview") or entry.get("result") or "")[:80]
+            size_hint = ""
+            if entry.get("result_path"):
+                size_hint = f" [{int(entry.get('result_size') or 0) // 1024}K offloaded]"
+            console.print(f"[dim]{ts_str}[/dim] {iter_tag}[{color}]{mark} {tool}[/{color}] [dim]{elapsed}ms[/dim]  {preview}{size_hint}")
         elif etype == "tool_skipped":
             console.print(f"[dim]{ts_str}[/dim] {iter_tag}[yellow]\u2298 {entry.get('tool', '')} (skipped)[/yellow]")
+        elif etype == "message":
+            role = entry.get("role", "?")
+            content = entry.get("content") or entry.get("content_preview") or ""
+            role_color = "cyan" if role == "user" else "green"
+            console.print(f"\n[dim]{ts_str}[/dim] {iter_tag}[bold {role_color}]{role.upper()}[/bold {role_color}] {content[:120]}")
         elif etype == "answer":
             content = entry.get("content", "")
-            console.print(f"\n[dim]{ts_str}[/dim] {iter_tag}[bold green]ANSWER[/bold green]\n{content[:500]}")
+            console.print(f"\n[dim]{ts_str}[/dim] {iter_tag}[bold green]ANSWER[/bold green]\n{content}")
         elif etype == "end":
             status = entry.get("status", "?")
             iters = entry.get("iterations", "?")
@@ -2370,9 +2449,9 @@ def cmd_swarm_presets() -> None:
     console.print(table)
 
 
-def cmd_swarm_run(preset: str, vars_json: Optional[str] = None) -> None:
+def cmd_swarm_run(preset: str, vars_json: Optional[str] = None) -> Optional[int]:
     """Run swarm preset (legacy polling mode, use cmd_swarm_run_live for streaming)."""
-    cmd_swarm_run_live(preset, vars_json)
+    return cmd_swarm_run_live(preset, vars_json)
 
 
 def cmd_swarm_inspect(preset: str) -> int:
@@ -2713,6 +2792,25 @@ def cmd_provider_login(provider: str) -> int:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_LIVE_BROKER = "robinhood"
+_LIVE_AUTHORIZE_INIT_TIMEOUT_SECONDS = 300.0
+_LIVE_AUTHORIZE_TIMEOUT_ENV = "VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS"
+
+
+def _authorize_timeout_seconds() -> float:
+    """Resolve the OAuth authorize handshake deadline in seconds.
+
+    Reads ``VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS`` and falls back to
+    :data:`_LIVE_AUTHORIZE_INIT_TIMEOUT_SECONDS` (300 s) when it is unset,
+    empty, non-numeric, or not strictly positive. This deadline bounds the
+    interactive ``list_tools`` handshake that drives the broker OAuth flow, so
+    a multi-minute human sign-in (e.g. Robinhood's face scan) has room to
+    complete.
+
+    Returns:
+        The authorize deadline in seconds (a positive float).
+    """
+    raw = get_env_config().agent_tuning.vibe_live_authorize_timeout_s
+    return float(raw) if raw and raw > 0 else float(_LIVE_AUTHORIZE_INIT_TIMEOUT_SECONDS)
 
 
 def _live_api_base() -> str:
@@ -2727,7 +2825,14 @@ def _live_api_base() -> str:
     Returns:
         The API base URL with any trailing slash removed.
     """
-    return os.environ.get("VIBE_TRADING_API_URL", "http://127.0.0.1:8000").rstrip("/")
+    return get_env_config().api.vibe_trading_api_url.rstrip("/")
+
+
+def _api_auth_headers() -> Dict[str, str]:
+    """Return Bearer auth headers for CLI-to-API control calls."""
+    reset_env_config()  # ensure fresh read of auth credentials
+    key = get_env_config().api.api_auth_key.strip()
+    return {"Authorization": f"Bearer {key}"} if key else {}
 
 
 def _live_api_call(method: str, path: str, *, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2758,6 +2863,278 @@ def _live_api_call(method: str, path: str, *, body: Optional[Dict[str, Any]] = N
         return {"status": "error", "error": str(exc)}
 
 
+def _channels_api_call(method: str, path: str, *, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Call an IM channel runtime endpoint on the local API server."""
+    import httpx
+
+    url = f"{_live_api_base()}{path}"
+    headers = _api_auth_headers()
+    try:
+        if method.upper() == "GET":
+            response = httpx.get(url, headers=headers, timeout=10.0)
+        else:
+            response = httpx.post(url, json=body or {}, headers=headers, timeout=10.0)
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:  # noqa: BLE001 - CLI should explain offline API cleanly
+        return {"status": "error", "error": str(exc)}
+
+
+def _channels_local_status() -> Dict[str, Any]:
+    """Build local channel config/import status without starting adapters."""
+    from src.channels.config import load_channels_config
+    from src.channels.registry import inspect_channels
+
+    config = load_channels_config()
+    return {
+        "running": False,
+        "source": "local_config",
+        "channels": inspect_channels(config),
+    }
+
+
+def _print_channels_status(payload: Dict[str, Any]) -> None:
+    """Render IM channel status."""
+    table = Table(title="IM Channels", box=box.SIMPLE)
+    table.add_column("Channel")
+    table.add_column("Configured")
+    table.add_column("Enabled")
+    table.add_column("Available")
+    table.add_column("Loaded")
+    table.add_column("Running")
+    table.add_column("Recovery")
+    channels = payload.get("channels") if isinstance(payload, dict) else {}
+    if not isinstance(channels, dict):
+        channels = {}
+    for name, item in sorted(channels.items()):
+        if not isinstance(item, dict):
+            continue
+        recovery = item.get("install_hint") or item.get("error") or ""
+        table.add_row(
+            str(name),
+            "yes" if item.get("configured") else "no",
+            "yes" if item.get("enabled") else "no",
+            "yes" if item.get("available") else "no",
+            "yes" if item.get("loaded") else "no",
+            "yes" if item.get("running") else "no",
+            str(recovery),
+        )
+    console.print(table)
+    if payload.get("status") == "error":
+        console.print(f"[yellow]API unavailable:[/yellow] {payload.get('error')}")
+        console.print("[dim]Start the backend with `vibe-trading serve --port 8000`, or inspect local config with this status output.[/dim]")
+
+
+def cmd_channels_status(*, json_mode: bool = False, local: bool = False) -> int:
+    """Show IM channel status."""
+    payload = _channels_local_status() if local else _channels_api_call("GET", "/channels/status")
+    if payload.get("status") == "error":
+        local_payload = _channels_local_status()
+        local_payload["status"] = "error"
+        local_payload["error"] = payload.get("error", "")
+        payload = local_payload
+    if json_mode:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        _print_channels_status(payload)
+    return EXIT_SUCCESS
+
+
+def cmd_channels_start(*, json_mode: bool = False) -> int:
+    """Start configured IM channels through the API runtime."""
+    payload = _channels_api_call("POST", "/channels/start")
+    if json_mode:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif payload.get("status") == "error":
+        console.print(f"[red]Failed to start IM channels:[/red] {payload.get('error')}")
+        console.print("[dim]Run `vibe-trading serve --port 8000` first, or set VIBE_TRADING_API_URL.[/dim]")
+        return EXIT_RUN_FAILED
+    else:
+        console.print("[green]IM channels started.[/green]")
+        _print_channels_status(payload)
+    return EXIT_SUCCESS
+
+
+def cmd_channels_stop(*, json_mode: bool = False) -> int:
+    """Stop configured IM channels through the API runtime."""
+    payload = _channels_api_call("POST", "/channels/stop")
+    if json_mode:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif payload.get("status") == "error":
+        console.print(f"[red]Failed to stop IM channels:[/red] {payload.get('error')}")
+        console.print("[dim]Run `vibe-trading serve --port 8000` first, or set VIBE_TRADING_API_URL.[/dim]")
+        return EXIT_RUN_FAILED
+    else:
+        console.print("[green]IM channels stopped.[/green]")
+        _print_channels_status(payload)
+    return EXIT_SUCCESS
+
+
+def cmd_channels_pairing(channel: str, command: str) -> int:
+    """Run a pairing command against the shared local pairing store."""
+    from src.channels.pairing import handle_pairing_command
+
+    console.print(handle_pairing_command(channel, command))
+    return EXIT_SUCCESS
+
+
+def cmd_channels_login(channel_name: str, *, force: bool = False) -> int:
+    """Run a channel adapter's interactive login hook when available."""
+    import asyncio
+
+    from src.channels.config import load_channels_config
+    from src.channels.manager import ChannelManager
+    from src.channels.bus.queue import MessageBus
+
+    config = load_channels_config()
+    section = dict(config.get(channel_name, {})) if isinstance(config.get(channel_name), dict) else {}
+    if channel_name == "websocket":
+        console.print("[green]WebSocket channel does not require interactive login.[/green]")
+        console.print("[dim]Configure channels.websocket in ~/.vibe-trading/agent.json, then run `vibe-trading channels start`.[/dim]")
+        return EXIT_SUCCESS
+    if not section:
+        console.print(f"[red]No config found for channel '{channel_name}'.[/red]")
+        console.print("[dim]Add it under channels.<name> in ~/.vibe-trading/agent.json, then retry.[/dim]")
+        return EXIT_USAGE_ERROR
+    section["enabled"] = True
+    manager = ChannelManager({channel_name: section}, MessageBus())
+    adapter = manager.get_channel(channel_name)
+    if adapter is None:
+        status = manager.get_status().get(channel_name, {})
+        recovery = status.get("install_hint") or status.get("error") or "adapter unavailable"
+        console.print(f"[red]Channel '{channel_name}' is unavailable.[/red] {recovery}")
+        return EXIT_RUN_FAILED
+    ok = asyncio.run(adapter.login(force=force))
+    if ok:
+        console.print(f"[green]Channel '{channel_name}' login completed.[/green]")
+        return EXIT_SUCCESS
+    console.print(f"[red]Channel '{channel_name}' login failed.[/red]")
+    return EXIT_RUN_FAILED
+
+
+def _dispatch_channels(args: argparse.Namespace) -> int:
+    """Dispatch IM channel subcommands."""
+    command = args.channels_command
+    if command == "status":
+        return cmd_channels_status(json_mode=args.channels_json, local=args.local)
+    if command == "start":
+        return cmd_channels_start(json_mode=args.channels_json)
+    if command == "stop":
+        return cmd_channels_stop(json_mode=args.channels_json)
+    if command == "pairing":
+        text = " ".join([args.pairing_command, *args.pairing_args]).strip()
+        return cmd_channels_pairing(args.channel, text or "list")
+    if command == "login":
+        return cmd_channels_login(args.channel_name, force=args.force)
+    console.print("[red]channels requires a subcommand.[/red] Try: vibe-trading channels status")
+    return EXIT_USAGE_ERROR
+# QVERIS-INTEGRATION
+def _print_qveris_config(config) -> None:  # QVERIS-INTEGRATION
+    """Render local QVeris config."""  # QVERIS-INTEGRATION
+    from src.tools.qveris_tool import SIGNUP_URL, INVITE_CODE, has_qveris_credentials, is_qveris_configured, mask_api_key, normalize_qveris_mode  # QVERIS-INTEGRATION
+    table = Table(title="Data Routing", box=box.SIMPLE)  # QVERIS-INTEGRATION
+    table.add_column("Field")  # QVERIS-INTEGRATION
+    table.add_column("Value")  # QVERIS-INTEGRATION
+    table.add_row("mode", normalize_qveris_mode(config.mode))  # QVERIS-INTEGRATION
+    table.add_row("free_route", "built-in public data")  # QVERIS-INTEGRATION
+    table.add_row("premium_provider", "QVeris")  # QVERIS-INTEGRATION
+    table.add_row("paid_active", "yes" if is_qveris_configured(config) else "no")  # QVERIS-INTEGRATION
+    table.add_row("premium_key", "yes" if has_qveris_credentials(config) else "no")  # QVERIS-INTEGRATION
+    table.add_row("base_url", config.base_url)  # QVERIS-INTEGRATION
+    table.add_row("api_key", mask_api_key(config.api_key) or "(not set)")  # QVERIS-INTEGRATION
+    table.add_row("budget/session", str(config.budget_credits_per_session))  # QVERIS-INTEGRATION
+    table.add_row("signup", SIGNUP_URL)  # QVERIS-INTEGRATION
+    table.add_row("invite_code", INVITE_CODE)  # QVERIS-INTEGRATION
+    console.print(table)  # QVERIS-INTEGRATION
+# QVERIS-INTEGRATION
+def cmd_qveris_status() -> int:  # QVERIS-INTEGRATION
+    """Show QVeris local config and live status when configured."""  # QVERIS-INTEGRATION
+    from src.tools.qveris_tool import QVerisClient, is_qveris_configured, load_qveris_config  # QVERIS-INTEGRATION
+    config = load_qveris_config()  # QVERIS-INTEGRATION
+    _print_qveris_config(config)  # QVERIS-INTEGRATION
+    if not is_qveris_configured(config):  # QVERIS-INTEGRATION
+        return EXIT_SUCCESS  # QVERIS-INTEGRATION
+    try:  # QVERIS-INTEGRATION
+        payload = QVerisClient(config).search("status", limit=1)  # QVERIS-INTEGRATION
+        console.print(f"[green]QVeris reachable.[/green] remaining_credits={payload.get('remaining_credits')}")  # QVERIS-INTEGRATION
+        return EXIT_SUCCESS  # QVERIS-INTEGRATION
+    except Exception as exc:  # noqa: BLE001  # QVERIS-INTEGRATION
+        console.print(f"[red]QVeris status failed:[/red] {exc}")  # QVERIS-INTEGRATION
+        return EXIT_RUN_FAILED  # QVERIS-INTEGRATION
+# QVERIS-INTEGRATION
+def cmd_qveris_enable(*, key: str | None = None, url: str | None = None) -> int:  # QVERIS-INTEGRATION
+    """Enable QVeris if an API key is present or supplied."""  # QVERIS-INTEGRATION
+    from src.tools.qveris_tool import SIGNUP_URL, INVITE_CODE, QVerisConfig, _read_config_file, save_qveris_config  # QVERIS-INTEGRATION
+    existing = _read_config_file()  # QVERIS-INTEGRATION
+    api_key = (key or existing.api_key or "").strip()  # QVERIS-INTEGRATION
+    if not api_key:  # QVERIS-INTEGRATION
+        console.print("[yellow]QVeris API key is required to enable the integration.[/yellow]")  # QVERIS-INTEGRATION
+        console.print(f"[dim]Sign up: {SIGNUP_URL}  invite_code={INVITE_CODE}[/dim]")  # QVERIS-INTEGRATION
+        return EXIT_USAGE_ERROR  # QVERIS-INTEGRATION
+    base_url = (url or existing.base_url).strip().rstrip("/")  # QVERIS-INTEGRATION
+    if not base_url.startswith(("http://", "https://")):  # QVERIS-INTEGRATION
+        console.print("[red]--url must start with http:// or https://[/red]")  # QVERIS-INTEGRATION
+        return EXIT_USAGE_ERROR  # QVERIS-INTEGRATION
+    saved = save_qveris_config(QVerisConfig(True, base_url, api_key, "paid", existing.budget_credits_per_session))  # QVERIS-INTEGRATION
+    console.print("[green]QVeris paid route enabled.[/green]")  # QVERIS-INTEGRATION
+    _print_qveris_config(saved)  # QVERIS-INTEGRATION
+    return EXIT_SUCCESS  # QVERIS-INTEGRATION
+# QVERIS-INTEGRATION
+def cmd_qveris_mode(
+    *,
+    mode: str,
+    budget: float | None = None,
+    key: str | None = None,
+    url: str | None = None,
+) -> int:  # QVERIS-INTEGRATION
+    """Switch QVeris between free and paid modes."""  # QVERIS-INTEGRATION
+    from src.tools.qveris_tool import QVerisConfig, _read_config_file, normalize_qveris_mode, save_qveris_config  # QVERIS-INTEGRATION
+    existing = _read_config_file()  # QVERIS-INTEGRATION
+    next_mode = normalize_qveris_mode(mode)  # QVERIS-INTEGRATION
+    next_budget = existing.budget_credits_per_session if budget is None else max(float(budget), 0.0)  # QVERIS-INTEGRATION
+    base_url = (url or existing.base_url).strip().rstrip("/")  # QVERIS-INTEGRATION
+    if not base_url.startswith(("http://", "https://")):  # QVERIS-INTEGRATION
+        console.print("[red]--url must start with http:// or https://[/red]")  # QVERIS-INTEGRATION
+        return EXIT_USAGE_ERROR  # QVERIS-INTEGRATION
+    api_key = (key or existing.api_key or "").strip()  # QVERIS-INTEGRATION
+    saved = save_qveris_config(QVerisConfig(next_mode == "paid", base_url, api_key, next_mode, next_budget))  # QVERIS-INTEGRATION
+    console.print(f"[green]QVeris mode set to {next_mode}.[/green]")  # QVERIS-INTEGRATION
+    _print_qveris_config(saved)  # QVERIS-INTEGRATION
+    return EXIT_SUCCESS  # QVERIS-INTEGRATION
+# QVERIS-INTEGRATION
+def cmd_qveris_disable() -> int:  # QVERIS-INTEGRATION
+    """Disable QVeris without deleting the stored key."""  # QVERIS-INTEGRATION
+    from src.tools.qveris_tool import QVerisConfig, _read_config_file, save_qveris_config  # QVERIS-INTEGRATION
+    existing = _read_config_file()  # QVERIS-INTEGRATION
+    save_qveris_config(QVerisConfig(False, existing.base_url, existing.api_key, "free", existing.budget_credits_per_session))  # QVERIS-INTEGRATION
+    console.print("[green]QVeris disabled.[/green]")  # QVERIS-INTEGRATION
+    return EXIT_SUCCESS  # QVERIS-INTEGRATION
+# QVERIS-INTEGRATION
+def cmd_qveris_usage() -> int:  # QVERIS-INTEGRATION
+    """Show recent QVeris usage events."""  # QVERIS-INTEGRATION
+    from src.tools.qveris_tool import QVerisClient, is_qveris_configured, load_qveris_config  # QVERIS-INTEGRATION
+    config = load_qveris_config()  # QVERIS-INTEGRATION
+    if not is_qveris_configured(config):  # QVERIS-INTEGRATION
+        console.print("[yellow]QVeris is not configured.[/yellow]")  # QVERIS-INTEGRATION
+        return EXIT_USAGE_ERROR  # QVERIS-INTEGRATION
+    try:  # QVERIS-INTEGRATION
+        payload = QVerisClient(config).usage_history(limit=10, page_size=10)  # QVERIS-INTEGRATION
+    except Exception as exc:  # noqa: BLE001  # QVERIS-INTEGRATION
+        console.print(f"[red]QVeris usage failed:[/red] {exc}")  # QVERIS-INTEGRATION
+        return EXIT_RUN_FAILED  # QVERIS-INTEGRATION
+    print(json.dumps(payload, indent=2, ensure_ascii=False))  # QVERIS-INTEGRATION
+    return EXIT_SUCCESS  # QVERIS-INTEGRATION
+def _dispatch_data(args: argparse.Namespace) -> int:  # QVERIS-INTEGRATION
+    """Dispatch user-facing data-routing commands."""  # QVERIS-INTEGRATION
+    if args.data_command == "status":  # QVERIS-INTEGRATION
+        return cmd_qveris_status()  # QVERIS-INTEGRATION
+    if args.data_command == "mode":  # QVERIS-INTEGRATION
+        return cmd_qveris_mode(mode=args.mode, budget=args.budget, key=args.key, url=args.url)  # QVERIS-INTEGRATION
+    if args.data_command == "usage":  # QVERIS-INTEGRATION
+        return cmd_qveris_usage()  # QVERIS-INTEGRATION
+    console.print("[red]data requires a subcommand.[/red] Try: vibe-trading data status")  # QVERIS-INTEGRATION
+    return EXIT_USAGE_ERROR  # QVERIS-INTEGRATION
+# QVERIS-INTEGRATION
 def _live_server_config(broker: str):
     """Resolve the protected MCP server config for ``broker``.
 
@@ -2779,6 +3156,66 @@ def _live_server_config(broker: str):
     return servers.get(broker.strip().lower())
 
 
+def _raw_live_server_config_entry(broker: str) -> dict[str, Any] | None:
+    """Best-effort raw lookup used only to explain invalid live config."""
+    from src.config.loader import _read_config_file
+    from src.config.paths import get_config_path
+    from src.config.schema import live_broker_key_for_url
+
+    try:
+        path = get_config_path()
+        if not path.exists():
+            return None
+        raw = _read_config_file(path)
+    except Exception:  # noqa: BLE001 — diagnostics must not mask the real CLI error
+        return None
+
+    servers = raw.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = raw.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return None
+
+    key = broker.strip().lower()
+    for server_key, server in servers.items():
+        if isinstance(server, dict) and str(server_key).strip().lower() == key:
+            return server
+
+    if key != "robinhood":
+        return None
+
+    for server in servers.values():
+        if isinstance(server, dict) and live_broker_key_for_url(str(server.get("url") or "")) == key:
+            return server
+    return None
+
+
+def _raw_server_entry_uses_wildcard(entry: dict[str, Any] | None) -> bool:
+    """Return whether a raw MCP server entry uses a wildcard enabledTools list."""
+    if entry is None:
+        return False
+    enabled_tools = entry.get("enabledTools", entry.get("enabled_tools"))
+    if not isinstance(enabled_tools, list):
+        return False
+    return "*" in {str(tool).strip() for tool in enabled_tools}
+
+
+def _print_missing_live_channel_config(key: str) -> None:
+    """Print actionable guidance when a live broker config cannot be loaded."""
+    if key == "robinhood":
+        from src.config.schema import format_robinhood_mcp_config_guidance
+
+        reason = "wildcard" if _raw_server_entry_uses_wildcard(_raw_live_server_config_entry(key)) else "missing"
+        console.print("[red]Robinhood live channel is not configured safely.[/red]")
+        console.print(format_robinhood_mcp_config_guidance(reason=reason), markup=False, soft_wrap=True)
+        return
+
+    console.print(
+        f"[red]No live channel configured for '{key}'.[/red] "
+        "Add the broker's mcpServers entry to ~/.vibe-trading/agent.json first."
+    )
+
+
 def cmd_live_authorize(broker: str) -> int:
     """Bootstrap the OAuth handshake for a live broker channel (desktop only).
 
@@ -2796,10 +3233,7 @@ def cmd_live_authorize(broker: str) -> int:
     key = broker.strip().lower()
     server_config = _live_server_config(key)
     if server_config is None:
-        console.print(
-            f"[red]No live channel configured for '{key}'.[/red] "
-            "Add the broker's mcpServers entry to ~/.vibe-trading/agent.json first."
-        )
+        _print_missing_live_channel_config(key)
         return EXIT_USAGE_ERROR
     if getattr(server_config, "auth", None) is None:
         console.print(
@@ -2816,7 +3250,36 @@ def cmd_live_authorize(broker: str) -> int:
     try:
         from src.tools.mcp import build_mcp_tool_wrappers
 
-        tools = build_mcp_tool_wrappers(key, server_config)
+        # The OAuth flow is driven lazily by the first request to the server —
+        # the `list_tools` discovery handshake — which is bounded by the
+        # per-call `tool_timeout` (default 30 s), NOT `init_timeout`. Raise both
+        # to the authorize deadline so a multi-minute human sign-in (e.g.
+        # Robinhood's face scan) does not trip the handshake. Raise-only: never
+        # shrink an already-larger user-configured timeout.
+        authorize_timeout = _authorize_timeout_seconds()
+        if hasattr(server_config, "model_copy"):
+            updates: dict[str, float] = {}
+            configured_init_timeout = getattr(server_config, "init_timeout", None)
+            if (
+                configured_init_timeout is None
+                or float(configured_init_timeout) < authorize_timeout
+            ):
+                updates["init_timeout"] = authorize_timeout
+            configured_tool_timeout = getattr(server_config, "tool_timeout", None)
+            if (
+                configured_tool_timeout is None
+                or float(configured_tool_timeout) < authorize_timeout
+            ):
+                updates["tool_timeout"] = authorize_timeout
+            if updates:
+                server_config = server_config.model_copy(update=updates)
+
+        # Single attempt: a transient-retry would open a fresh client context
+        # that starts a SECOND OAuth callback server on a new port, orphaning
+        # the sign-in the user just completed against the first one (see #259).
+        tools = build_mcp_tool_wrappers(
+            key, server_config, max_list_tools_attempts=1
+        )
     except Exception as exc:  # noqa: BLE001 — surface any handshake failure
         console.print(f"[red]Authorization failed:[/red] {exc}")
         return EXIT_RUN_FAILED
@@ -2829,6 +3292,14 @@ def cmd_live_authorize(broker: str) -> int:
         "[dim]The channel is read-only until you commit a mandate and enable "
         "order tools. Use `vibe-trading connector status` to check state.[/dim]"
     )
+    return EXIT_SUCCESS
+
+
+def cmd_provider_doctor() -> int:
+    """Print redacted provider diagnostics."""
+    from src.providers.llm import provider_diagnostics
+
+    console.print_json(data=provider_diagnostics())
     return EXIT_SUCCESS
 
 
@@ -3928,6 +4399,41 @@ def _build_parser() -> argparse.ArgumentParser:
     provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
     login_parser = provider_subparsers.add_parser("login", help="Authenticate with an OAuth provider")
     login_parser.add_argument("provider", help="OAuth provider name, e.g. openai-codex")
+    provider_subparsers.add_parser("doctor", help="Print redacted provider diagnostics")
+
+    # QVERIS-INTEGRATION
+    data_parser = subparsers.add_parser("data", help="Manage data routing mode")  # QVERIS-INTEGRATION
+    data_subparsers = data_parser.add_subparsers(dest="data_command")  # QVERIS-INTEGRATION
+    data_subparsers.add_parser("status", help="Show active data routing mode")  # QVERIS-INTEGRATION
+    data_mode = data_subparsers.add_parser("mode", help="Switch between free public data and paid data routing")  # QVERIS-INTEGRATION
+    data_mode.add_argument("mode", choices=["free", "paid"], help="free uses built-in public data; paid enables premium data execution")  # QVERIS-INTEGRATION
+    data_mode.add_argument("--budget", type=float, help="Paid-mode credit budget per session")  # QVERIS-INTEGRATION
+    data_mode.add_argument("--key", help="Premium data API key")  # QVERIS-INTEGRATION
+    data_mode.add_argument("--url", help="Premium data API base URL")  # QVERIS-INTEGRATION
+    data_subparsers.add_parser("usage", help="Show recent paid data usage")  # QVERIS-INTEGRATION
+    # QVERIS-INTEGRATION
+    channels_parser = subparsers.add_parser("channels", help="Manage IM channel adapters")
+    channels_subparsers = channels_parser.add_subparsers(dest="channels_command")
+    channels_status = channels_subparsers.add_parser("status", help="Show IM channel status")
+    channels_status.add_argument("--json", dest="channels_json", action="store_true", help="Print JSON")
+    channels_status.add_argument("--local", action="store_true", help="Inspect local config without contacting the API")
+    channels_start = channels_subparsers.add_parser("start", help="Start configured IM channels through the API")
+    channels_start.add_argument("--json", dest="channels_json", action="store_true", help="Print JSON")
+    channels_stop = channels_subparsers.add_parser("stop", help="Stop configured IM channels through the API")
+    channels_stop.add_argument("--json", dest="channels_json", action="store_true", help="Print JSON")
+    channels_login = channels_subparsers.add_parser("login", help="Run a channel adapter login hook")
+    channels_login.add_argument("channel_name", help="Channel name, e.g. weixin, feishu, whatsapp")
+    channels_login.add_argument("--force", action="store_true", help="Ignore existing credentials where supported")
+    channels_pairing = channels_subparsers.add_parser("pairing", help="Manage IM sender pairing")
+    channels_pairing.add_argument("--channel", default="telegram", help="Channel context for list/revoke commands")
+    channels_pairing.add_argument(
+        "pairing_command",
+        nargs="?",
+        default="list",
+        choices=["list", "approve", "deny", "revoke"],
+        help="Pairing command",
+    )
+    channels_pairing.add_argument("pairing_args", nargs="*", help="Pairing command arguments")
 
     list_parser = subparsers.add_parser("list", help="List runs")
     list_parser.add_argument("--limit", dest="list_limit", type=int, default=20, help="Maximum number of runs")
@@ -3939,6 +4445,40 @@ def _build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--max-iter", dest="chat_max_iter", type=int, default=50, help="Maximum agent iterations")
 
     subparsers.add_parser("init", help="Interactive setup: create ~/.vibe-trading/.env")
+
+    # Cross-platform frontend setup. See cmd_setup() for details.
+    setup_parser = subparsers.add_parser(
+        "setup",
+        help="Install frontend dependencies and build the production bundle",
+    )
+    setup_parser.add_argument(
+        "--frontend-dir",
+        default=str(AGENT_DIR.parent / "frontend"),
+        help="Path to the frontend directory (default: <repo>/frontend)",
+    )
+
+    # Cross-platform dev mode. See cmd_dev() for details.
+    dev_parser = subparsers.add_parser(
+        "dev",
+        help="Start backend + frontend dev servers in one process",
+    )
+    dev_parser.add_argument(
+        "--port",
+        type=int,
+        default=8899,
+        help="Backend port (default: 8899)",
+    )
+    dev_parser.add_argument(
+        "--frontend-port",
+        type=int,
+        default=5899,
+        help="Vite dev server port, must match vite.config.ts (default: 5899)",
+    )
+    dev_parser.add_argument(
+        "--frontend-dir",
+        default=str(AGENT_DIR.parent / "frontend"),
+        help="Path to the frontend directory (default: <repo>/frontend)",
+    )
 
     memory_parser = subparsers.add_parser("memory", help="Inspect persistent memory")
     memory_subparsers = memory_parser.add_subparsers(dest="memory_command")
@@ -4099,6 +4639,16 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_placeholder": "sk-or-v1-...",
     },
     {
+        "label": "Requesty (OpenAI-compatible gateway - multiple models)",
+        "provider": "requesty",
+        "key_env": "REQUESTY_API_KEY",
+        "base_env": "REQUESTY_BASE_URL",
+        "base_url": "https://router.requesty.ai/v1",
+        "model": "openai/gpt-4o-mini",
+        "key_prefix": None,
+        "key_placeholder": "api-key...",
+    },
+    {
         "label": "DeepSeek",
         "provider": "deepseek",
         "key_env": "DEEPSEEK_API_KEY",
@@ -4114,7 +4664,7 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_env": "OPENAI_API_KEY",
         "base_env": "OPENAI_BASE_URL",
         "base_url": "https://api.openai.com/v1",
-        "model": "gpt-5.5-instant",
+        "model": "gpt-5.5",
         "key_prefix": "sk-",
         "key_placeholder": "sk-...",
     },
@@ -4214,7 +4764,7 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_env": None,
         "base_env": "OPENAI_CODEX_BASE_URL",
         "base_url": "https://chatgpt.com/backend-api/codex/responses",
-        "model": "openai-codex/gpt-5.3-codex",
+        "model": "openai-codex/gpt-5.4",
         "key_prefix": None,
         "key_placeholder": None,
     },
@@ -4235,6 +4785,8 @@ def _render_env_content(config: dict[str, str]) -> str:
         "LANGCHAIN_PROVIDER",
         "OPENROUTER_API_KEY",
         "OPENROUTER_BASE_URL",
+        "REQUESTY_API_KEY",
+        "REQUESTY_BASE_URL",
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
         "OPENAI_API_KEY",
@@ -4509,6 +5061,296 @@ def cmd_init() -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Cross-platform frontend setup / dev commands.
+#
+# These exist to bridge a real Windows footgun: the package's frontend uses
+# TypeScript, but `npx tsc` on Windows does NOT resolve the locally-installed
+# TypeScript binary. Instead, npx hits the npm registry and downloads an
+# abandoned 10-year-old package called `tsc@2.0.4` that prints
+# "This is not the tsc command you are looking for". The fix is to always
+# invoke TypeScript via `npm exec --package=typescript tsc ...` (or
+# `npx --package=typescript tsc ...`) on Windows; on POSIX, `npm run build`
+# already works because npm prepends ./node_modules/.bin to PATH for local
+# scripts.
+# ---------------------------------------------------------------------------
+
+
+def _is_windows() -> bool:
+    """True when running on a Windows-like platform (win32, including Cygwin/MSYS)."""
+    return sys.platform == "win32"
+
+
+def _resolve_node_and_npm() -> tuple[Optional[str], Optional[str]]:
+    """Return ``(node_path, npm_path)`` if both are on PATH, else ``(None, None)``.
+
+    Used by ``cmd_setup`` to fail fast with a clear message instead of
+    surfacing a cryptic ENOENT from npm itself.
+    """
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    return node, npm
+
+
+def _build_frontend_cmd(frontend_dir: Path) -> list[list[str]]:
+    """Return the ordered list of subprocess invocations needed to build the frontend.
+
+    On Windows we explicitly pin ``--package=typescript`` / ``--package=vite``
+    so npm cannot accidentally fetch the abandoned ``tsc`` package from the
+    registry. On POSIX systems, ``npm run build`` is sufficient because npm
+    prepends ``./node_modules/.bin`` to ``PATH`` for local scripts.
+
+    Each inner list is a single ``subprocess.run`` invocation. Returned as a
+    list of steps so the caller can stream progress.
+    """
+    is_win = _is_windows()
+    if is_win:
+        # `npm exec --package=typescript tsc -b` is the safe form on Windows;
+        # plain `npx tsc` will fetch the abandoned `tsc@2.0.4` package.
+        return [
+            ["npm", "install", "--no-audit", "--no-fund"],
+            ["npm", "exec", "--package=typescript", "--", "tsc", "-b"],
+            ["npm", "exec", "--package=vite", "--", "vite", "build"],
+        ]
+    return [
+        ["npm", "install", "--no-audit", "--no-fund"],
+        ["npm", "run", "build"],
+    ]
+
+
+def _run_step(
+    description: str,
+    cmd: list[str],
+    cwd: Path,
+) -> bool:
+    """Run one subprocess step, returning True on success.
+
+    Decodes subprocess output as UTF-8 with ``errors="replace"`` so that
+    non-ASCII bytes emitted by tools like Vite do not raise
+    ``UnicodeDecodeError`` on platforms whose default codec is GBK/CP936
+    (notably Windows). The captured text is only used to surface a
+    friendly error message; lossy decoding is acceptable here.
+    """
+    console.print(f"[dim]  {description} …[/dim]")
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]  failed:[/red] {exc}")
+        return False
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        # Show the last 20 lines to keep noise manageable.
+        tail = "\n".join(err.splitlines()[-20:]) if err else "(no output)"
+        console.print(f"[red]  {description} failed:[/red]\n{tail}")
+        return False
+    return True
+
+
+def cmd_setup(frontend_dir: Path) -> int:
+    """Install frontend dependencies and build the production bundle.
+
+    Cross-platform wrapper that hides the ``npx tsc`` / ``npm exec tsc``
+    Windows footgun. Equivalent to running ``cd frontend && npm install
+    && npm run build`` from a POSIX shell, but works on Windows without
+    the user having to know about the abandoned ``tsc`` package on the
+    npm registry.
+    """
+    console.print(
+        Panel(
+            f"[bold cyan]Vibe-Trading frontend setup[/bold cyan]\n"
+            f"[dim]{frontend_dir}[/dim]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+
+    if not frontend_dir.exists():
+        console.print(
+            f"[red]Frontend directory not found:[/red] {frontend_dir}\n"
+            "[dim]Pass --frontend-dir to point at a different location.[/dim]"
+        )
+        return EXIT_USAGE_ERROR
+
+    node, npm = _resolve_node_and_npm()
+    if not node or not npm:
+        missing = [name for name, path_ in (("node", node), ("npm", npm)) if not path_]
+        console.print(
+            f"[red]Required tool not on PATH:[/red] {', '.join(missing)}\n"
+            "[dim]Install Node.js (>= 18) from https://nodejs.org and retry.[/dim]"
+        )
+        return EXIT_USAGE_ERROR
+
+    # On Windows, ``npm`` is shipped as ``npm.cmd``; ``subprocess.run`` does
+    # not consult ``PATHEXT`` for bare command names, so it would raise
+    # ``FileNotFoundError`` even though ``shutil.which("npm")`` returned a
+    # valid path. Resolve to the full path before invoking.
+    npm_path = npm
+    if _is_windows():
+        steps = [
+            [npm_path, *step[1:]] if step and step[0] == "npm" else step
+            for step in _build_frontend_cmd(frontend_dir)
+        ]
+    else:
+        steps = _build_frontend_cmd(frontend_dir)
+    for step in steps:
+        description = " ".join(step[:3])  # e.g. "npm install --no-audit"
+        if not _run_step(description, step, frontend_dir):
+            return EXIT_RUN_FAILED
+
+    console.print(
+        Panel(
+            "[green]Frontend built.[/green]\n"
+            f"  Artifacts: [cyan]{frontend_dir / 'dist'}[/cyan]\n"
+            "[dim]Run [bold]vibe-trading serve[/bold] to serve everything on one port.[/dim]",
+            border_style="green",
+            padding=(0, 1),
+        )
+    )
+    return EXIT_SUCCESS
+
+
+def cmd_dev(
+    backend_port: int = 8899,
+    frontend_port: int = 5899,
+    frontend_dir: Optional[Path] = None,
+) -> int:
+    """Start backend + Vite dev server in one foreground process.
+
+    Spawns two child processes:
+
+    * The FastAPI backend, launched from ``AGENT_DIR`` so that
+      ``python -m cli._legacy serve`` resolves the in-repo ``cli`` package
+      (launching it from the repo root would fail with
+      ``ModuleNotFoundError: No module named 'cli'``).
+    * The Vite dev server, launched from ``frontend_dir`` with the port
+      from ``vite.config.ts`` (currently 5899). We do NOT hardcode
+      ``5173`` — that would be wrong for this project.
+
+    Both children inherit stdout/stderr so their logs are interleaved
+    with the dev banner. ``Ctrl+C`` (SIGINT) and ``SIGTERM`` cleanly
+    terminate both children.
+    """
+    frontend_dir = frontend_dir or (AGENT_DIR.parent / "frontend")
+    if not frontend_dir.exists():
+        console.print(
+            f"[red]Frontend directory not found:[/red] {frontend_dir}\n"
+            "[dim]Pass --frontend-dir to point at a different location.[/dim]"
+        )
+        return EXIT_USAGE_ERROR
+
+    # `npm run dev` invokes the local Vite binary at
+    # ``frontend/node_modules/.bin/vite``. If ``node_modules`` does not
+    # exist (or is missing the Vite package), npm's bare-script
+    # resolution will print a confusing "vite is not a command" error
+    # and exit. Detect this case up front and point the user at
+    # ``vibe-trading setup`` instead.
+    vite_bin = frontend_dir / "node_modules" / ".bin" / ("vite.cmd" if _is_windows() else "vite")
+    if not vite_bin.exists():
+        console.print(
+            Panel(
+                f"[red]Frontend dependencies not installed.[/red]\n"
+                f"  Missing: [dim]{frontend_dir / 'node_modules'}[/dim]\n\n"
+                "Run this first:\n"
+                "  [cyan]vibe-trading setup[/cyan]\n\n"
+                "[dim]Or, to start the dev mode anyway and install on the fly,\n"
+                "run [bold]vibe-trading setup[/bold] in another terminal.[/dim]",
+                title="vibe-trading dev",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        return EXIT_USAGE_ERROR
+
+    node, npm = _resolve_node_and_npm()
+    if not node or not npm:
+        missing = [name for name, path_ in (("node", node), ("npm", npm)) if not path_]
+        console.print(
+            f"[red]Required tool not on PATH:[/red] {', '.join(missing)}\n"
+            "[dim]Install Node.js (>= 18) from https://nodejs.org and retry.[/dim]"
+        )
+        return EXIT_USAGE_ERROR
+
+    backend_cmd = [sys.executable, "-m", "cli._legacy", "serve", "--port", str(backend_port)]
+    # On Windows, ``npm`` is typically ``npm.cmd``. ``subprocess.Popen`` does
+    # not consult ``PATHEXT`` for bare command names, so the call would fail
+    # with ``FileNotFoundError`` even though ``shutil.which("npm")`` returned
+    # a path. Use the resolved executable path directly.
+    npm_executable = npm if _is_windows() else "npm"
+    frontend_cmd = [npm_executable, "run", "dev", "--", "--port", str(frontend_port)]
+
+    console.print(
+        Panel(
+            f"[bold cyan]Vibe-Trading dev[/bold cyan]\n"
+            f"  Backend  → [cyan]http://127.0.0.1:{backend_port}[/cyan]  "
+            f"(cwd: {AGENT_DIR})\n"
+            f"  Frontend → [cyan]http://localhost:{frontend_port}[/cyan]  "
+            f"(cwd: {frontend_dir})",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    console.print("[dim]Press Ctrl+C to stop both servers.[/dim]\n")
+
+    backend = subprocess.Popen(backend_cmd, cwd=str(AGENT_DIR))
+    frontend = subprocess.Popen(frontend_cmd, cwd=str(frontend_dir))
+    children = [backend, frontend]
+
+    def _terminate_all() -> None:
+        for child in children:
+            if child.poll() is None:
+                try:
+                    child.terminate()
+                except OSError:
+                    pass
+
+    # Wire signal handlers. On Windows, SIGTERM does not exist and signal
+    # handlers must be installed from the main thread; KeyboardInterrupt is
+    # the cross-platform path for Ctrl+C.
+    if threading.current_thread() is threading.main_thread():
+        try:
+            signal.signal(signal.SIGINT, lambda *_: _terminate_all())
+        except (ValueError, OSError):
+            pass
+        try:
+            signal.signal(signal.SIGTERM, lambda *_: _terminate_all())
+        except (AttributeError, ValueError, OSError):
+            pass
+
+    try:
+        # Wait for whichever process exits first; if it's the backend we
+        # bring the frontend down too, and vice versa.
+        while True:
+            time.sleep(0.5)
+            if backend.poll() is not None or frontend.poll() is not None:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _terminate_all()
+        # Give the children a brief grace period, then force-kill.
+        deadline = time.time() + 5
+        for child in children:
+            remaining = max(0.0, deadline - time.time())
+            try:
+                child.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                try:
+                    child.kill()
+                except OSError:
+                    pass
+
+    return EXIT_SUCCESS
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint returning a process exit code."""
     raw_argv = list(sys.argv[1:] if argv is None else argv)
@@ -4524,13 +5366,31 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init":
         return cmd_init()
+    if args.command == "setup":
+        return _coerce_exit_code(
+            cmd_setup(frontend_dir=Path(args.frontend_dir))
+        )
+    if args.command == "dev":
+        return _coerce_exit_code(
+            cmd_dev(
+                backend_port=args.port,
+                frontend_port=args.frontend_port,
+                frontend_dir=Path(args.frontend_dir),
+            )
+        )
     if args.command == "serve":
         return serve_main(raw_argv[1:])
     if args.command == "provider":
         if args.provider_command == "login":
             return cmd_provider_login(args.provider)
-        console.print("[red]provider requires a subcommand.[/red] Try: vibe-trading provider login openai-codex")
+        if args.provider_command == "doctor":
+            return cmd_provider_doctor()
+        console.print("[red]provider requires a subcommand.[/red] Try: vibe-trading provider doctor")
         return EXIT_USAGE_ERROR
+    if args.command == "channels":
+        return _coerce_exit_code(_dispatch_channels(args))
+    if args.command == "data":  # QVERIS-INTEGRATION
+        return _coerce_exit_code(_dispatch_data(args))  # QVERIS-INTEGRATION
     if args.command == "run":
         return _handle_prompt_command(
             args.run_prompt,
@@ -4583,8 +5443,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.swarm_inspect:
         return _coerce_exit_code(cmd_swarm_inspect(args.swarm_inspect))
     if args.swarm_run:
-        preset_name = args.swarm_run[0]
-        vars_json = args.swarm_run[1] if len(args.swarm_run) > 1 else None
+        parsed_swarm_run = _parse_swarm_run_args(args.swarm_run)
+        if parsed_swarm_run is None:
+            return EXIT_USAGE_ERROR
+        preset_name, vars_json = parsed_swarm_run
         return _coerce_exit_code(cmd_swarm_run_live(preset_name, vars_json))
     if args.swarm_list:
         return _coerce_exit_code(cmd_swarm_list())

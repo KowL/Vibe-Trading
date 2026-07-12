@@ -261,7 +261,7 @@ def _seed_proposal(tmp_path: Path, proposal_id: str, broker: str = "robinhood") 
 
 def test_c1_relay_builds_mandate_proposal_frame(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path), raising=False)
-    proposal_id = "mp_01ABCdef"
+    proposal_id = "mp_" + "1" * 32
     _seed_proposal(tmp_path, proposal_id)
 
     event = SimpleNamespace(
@@ -306,7 +306,7 @@ def test_c1_relay_returns_none_when_proposal_missing(tmp_path: Path, monkeypatch
         data={
             "tool": "propose_mandate_profiles",
             "status": "ok",
-            "preview": json.dumps({"proposal_id": "mp_missing01"})[:200],
+            "preview": json.dumps({"proposal_id": "mp_" + "2" * 32})[:200],
         },
     )
     assert api_server._mandate_proposal_frame_from_tool_result(event) is None
@@ -397,7 +397,7 @@ def test_live_action_relay_builds_frame_from_guard_result(tmp_path: Path, monkey
         event_type="tool_result",
         session_id="s1",
         data={
-            "tool": "mcp_robinhood_place_order",
+            "tool": "mcp_robinhood_place_equity_order",
             "status": "ok",
             "preview": json.dumps({"status": "ok", "live_action": {"audit_id": audit_id}})[:200],
         },
@@ -427,7 +427,7 @@ def test_live_action_relay_ignores_non_live_results(tmp_path: Path, monkeypatch)
 def test_fetch_broker_ceilings_derives_from_account(tmp_path, monkeypatch) -> None:
     class _StubAdapter:
         def call_tool(self, name, args):
-            assert name == "get_account"
+            assert name == "get_portfolio"
             return {"status": "ok", "result": {"buying_power": 4200.0}}
 
     monkeypatch.setattr(api_server, "_live_broker_adapter", lambda broker: _StubAdapter())

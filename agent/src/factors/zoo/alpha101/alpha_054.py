@@ -1,3 +1,9 @@
+
+# ============================================================
+# 中文名称: Kakushadze Alpha #54
+# 简要说明: Kakushadze (2015) 101 Formulaic Alphas 中的第54号因子，详见公式定义。
+# 典型用途: 作为多因子模型中的alpha信号，经中性化处理后用于选股或股指期货交易。
+# ============================================================
 """Kakushadze Alpha #54.
 
 Formula (paper appendix): -1 * ((low-close)*(open^5)) / ((low-high)*(close^5))
@@ -37,7 +43,7 @@ __alpha_meta__ = {
     'columns_required': ['open', 'high', 'low', 'close'],
     'extras_required': [],
     'requires_sector': False,
-    'universe': ['equity_us'],
+    'universe': ['equity_us', 'equity_in'],
     'frequency': ['1D'],
     'decay_horizon': 5,
     'min_warmup_bars': 1,
