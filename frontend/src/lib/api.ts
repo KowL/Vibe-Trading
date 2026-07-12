@@ -47,7 +47,18 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
     throw await errorFromResponse(res);
   }
   const text = await res.text();
-  return text ? JSON.parse(text) : ({} as T);
+  if (!text) return {} as T;
+
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const preview = text.slice(0, 80).replace(/\s+/g, " ");
+    throw new ApiError(
+      `Expected JSON from ${path}, got ${contentType || "unknown content type"}: ${preview}`,
+      res.status,
+    );
+  }
+
+  return JSON.parse(text) as T;
 }
 
 export interface UploadResult {
@@ -73,7 +84,7 @@ function appendQueryParam(url: string, key: string, value: string): string {
 
 export const api = {
   uploadFile,
-  listRuns: () => request<RunListItem[]>("/runs"),
+  listRuns: (limit?: number) => request<RunListItem[]>(`/runs${limit ? `?limit=${encodeURIComponent(String(limit))}` : ""}`),
   getRun: (id: string, params: RunDetailParams = {}) => {
     const q = new URLSearchParams();
     if (params.chart_payload) q.set("chart_payload", params.chart_payload);
@@ -143,6 +154,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+  getChannelStatus: () => request<ChannelRuntimeStatus>("/channels/status"),
+  startChannels: () => request<ChannelRuntimeActionResponse>("/channels/start", { method: "POST" }),
+  stopChannels: () => request<ChannelRuntimeActionResponse>("/channels/stop", { method: "POST" }),
+  runChannelPairingCommand: (body: ChannelPairingCommandRequest) =>
+    request<ChannelPairingCommandResponse>("/channels/pairing/command", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   // Alpha Zoo API
   listAlphas: (params: AlphaListParams = {}) => {
@@ -185,7 +204,7 @@ export const api = {
     }),
   // Read the persistent runtime status across all authorized brokers (SPEC §7.5).
   // Polled by the RunnerStatus panel; a plain authenticated GET, never a chat message.
-  getLiveStatus: () => request<LiveStatus>("/live/status"),
+  getLiveStatus: (signal?: AbortSignal) => request<LiveStatus>("/live/status", { signal }),
   authorizeLive: (broker: string) =>
     request<LiveAuthorizeResponse>("/live/authorize", {
       method: "POST",
@@ -296,6 +315,40 @@ export interface DataSourceSettings {
 export interface UpdateDataSourceSettingsRequest {
   tushare_token?: string;
   clear_tushare_token?: boolean;
+}
+
+export interface ChannelAdapterStatus {
+  name: string;
+  display_name: string;
+  configured: boolean;
+  enabled: boolean;
+  available: boolean;
+  loaded: boolean;
+  running: boolean;
+  error?: string;
+  install_hint?: string;
+}
+
+export interface ChannelRuntimeStatus {
+  running: boolean;
+  inbound_queue: number;
+  outbound_queue: number;
+  session_count: number;
+  channels: Record<string, ChannelAdapterStatus>;
+}
+
+export interface ChannelRuntimeActionResponse extends ChannelRuntimeStatus {
+  status: string;
+}
+
+export interface ChannelPairingCommandRequest {
+  channel: string;
+  command: string;
+}
+
+export interface ChannelPairingCommandResponse {
+  channel: string;
+  reply: string;
 }
 
 // --- Types matching backend API contracts ---

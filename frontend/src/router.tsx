@@ -16,6 +16,9 @@ const Settings = lazy(() =>
 const Runtime = lazy(() =>
   import("@/pages/Runtime").then((m) => ({ default: m.Runtime })),
 );
+const Reports = lazy(() =>
+  import("@/pages/Reports").then((m) => ({ default: m.Reports })),
+);
 const Correlation = lazy(() =>
   import("@/pages/Correlation").then((m) => ({ default: m.Correlation })),
 );
@@ -75,6 +78,7 @@ export const router = createBrowserRouter([
       { path: "/", element: wrap(Home) },
       { path: "/agent", element: wrap(Agent) },
       { path: "/runtime", element: wrap(Runtime) },
+      { path: "/reports", element: wrap(Reports) },
       { path: "/alpha-zoo", element: wrap(AlphaZoo) },
       { path: "/settings", element: wrap(Settings) },
       { path: "/correlation", element: wrap(Correlation) },

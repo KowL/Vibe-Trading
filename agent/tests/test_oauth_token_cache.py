@@ -7,7 +7,7 @@ These guard the security-critical invariants of the live-channel token cache:
   back from disk, never from constructor args or process memory alone.
 * A cached token never appears in any log record or in the OAuth transport's
   request-bound payload.
-* The store rejects path-escape keys (defense-in-depth on the cache root).
+* URL/path-shaped cache keys are neutralized into cache-root-local filenames.
 """
 
 from __future__ import annotations
@@ -26,21 +26,28 @@ from src.tools.mcp import _build_token_store
 pytestmark = pytest.mark.unit
 
 
+def _assert_owner_only_mode_on_posix(cache: Path) -> None:
+    assert cache.is_dir()
+    if os.name == "nt":
+        return
+    mode = stat.S_IMODE(os.stat(cache).st_mode)
+    assert mode == 0o700, f"expected owner-only 0700, got {oct(mode)}"
+
+
 def test_build_token_store_creates_dir_0700(tmp_path: Path) -> None:
     cache = tmp_path / "oauth"
     assert not cache.exists()
 
     _build_token_store(str(cache))
 
-    assert cache.is_dir()
-    mode = stat.S_IMODE(os.stat(cache).st_mode)
-    assert mode == 0o700, f"expected owner-only 0700, got {oct(mode)}"
+    _assert_owner_only_mode_on_posix(cache)
 
 
 def test_build_token_store_expands_user(monkeypatch, tmp_path: Path) -> None:
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
 
     _build_token_store("~/.vibe-trading/live/robinhood/oauth")
 
@@ -53,7 +60,7 @@ def test_build_token_store_idempotent_on_existing_dir(tmp_path: Path) -> None:
     _build_token_store(str(cache))
     # Second call must not raise on an already-existing directory.
     _build_token_store(str(cache))
-    assert stat.S_IMODE(os.stat(cache).st_mode) == 0o700
+    _assert_owner_only_mode_on_posix(cache)
 
 
 def test_token_persists_across_store_instances(tmp_path: Path) -> None:
@@ -69,6 +76,42 @@ def test_token_persists_across_store_instances(tmp_path: Path) -> None:
 
     read_back = asyncio.run(_roundtrip())
     assert read_back == token_value
+
+
+def test_fastmcp_url_cache_keys_are_filesystem_safe(tmp_path: Path) -> None:
+    """FastMCP OAuth keys include the raw MCP URL and must stay cache-local."""
+    cache = tmp_path / "oauth"
+    url = "https://agent.robinhood.com/mcp/trading"
+    entries = [
+        ("mcp-oauth-client-info", f"{url}/client_info"),
+        ("mcp-oauth-token", f"{url}/tokens"),
+        ("mcp-oauth-token-expiry", f"{url}/token_expiry"),
+    ]
+
+    async def _roundtrip_url_keys() -> None:
+        writer = _build_token_store(str(cache))
+        for collection, key in entries:
+            await writer.put(collection=collection, key=key, value={"key": key})
+
+        reader = _build_token_store(str(cache))
+        for collection, key in entries:
+            assert await reader.get(collection=collection, key=key) == {"key": key}
+
+    asyncio.run(_roundtrip_url_keys())
+
+    collection_names = {collection for collection, _ in entries}
+    payload_files = [
+        path.relative_to(cache)
+        for path in cache.rglob("*.json")
+        if path.parent.name in collection_names
+    ]
+    assert len(payload_files) == len(entries)
+    assert all(len(path.parts) == 2 for path in payload_files)
+    assert not any(
+        part in {"https:", "agent.robinhood.com", "mcp", "trading"}
+        for path in payload_files
+        for part in path.parts
+    )
 
 
 def test_token_value_never_in_args_or_payload(tmp_path: Path) -> None:
@@ -104,22 +147,21 @@ def test_token_never_logged(tmp_path: Path, caplog) -> None:
         assert secret not in record.getMessage()
 
 
-def test_store_rejects_path_escape_key(tmp_path: Path) -> None:
-    """FileTreeStore fails closed when a key would escape the cache root."""
-    from key_value.aio.errors.store import PathSecurityError
-
+def test_store_sanitizes_path_escape_key_inside_cache_root(tmp_path: Path) -> None:
+    """Path-shaped keys are stored under a sanitized cache-local filename."""
     cache = tmp_path / "oauth"
     store = _build_token_store(str(cache))
 
-    async def _write_escape() -> None:
+    async def _write_escape() -> dict | None:
         await store.put(collection="robinhood", key="../../escape", value={"x": 1})
+        return await store.get(collection="robinhood", key="../../escape")
 
-    with pytest.raises(PathSecurityError):
-        asyncio.run(_write_escape())
+    assert asyncio.run(_write_escape()) == {"x": 1}
 
     # Nothing leaked outside the cache root.
     assert not (tmp_path / "escape").exists()
     assert not (tmp_path.parent / "escape").exists()
+    assert all(path.resolve().is_relative_to(cache.resolve()) for path in cache.rglob("*") if path.is_file())
 
 
 # --------------------------------------------------------------------------- #
@@ -144,7 +186,7 @@ def test_token_never_in_audit_payload() -> None:
         session_id="s1",
         outcome="accepted",
         server="robinhood",
-        remote_tool="place_order",
+        remote_tool="place_equity_order",
         broker_request={"symbol": "AAPL", "access_token": _OAUTH_SECRET},
         broker_response={"order_id": "rh_x", "authorization": _OAUTH_SECRET},
     )
@@ -174,8 +216,8 @@ def test_token_not_accepted_from_tool_args_or_variables() -> None:
 
     spec = MCPRemoteToolSpec(
         server_name="robinhood",
-        remote_name="place_order",
-        local_name="mcp_robinhood_place_order",
+        remote_name="place_equity_order",
+        local_name="mcp_robinhood_place_equity_order",
         description="place an order",
         parameters={
             "type": "object",
@@ -247,12 +289,12 @@ def test_cache_expiry_surfaces_reauth_no_silent_stale_call() -> None:
             "type": "streamableHttp",
             "url": "https://agent.robinhood.com/mcp/trading",
             "auth": {"type": "oauth", "scopes": ["trading.read"]},
-            "enabled_tools": ["place_order"],
+            "enabled_tools": ["place_equity_order"],
         }
     )
     adapter = MCPServerAdapter("robinhood", cfg, client_factory=_ExpiredAuthClient)
 
-    result = adapter.call_tool("place_order", {"symbol": "AAPL", "side": "buy"})
+    result = adapter.call_tool("place_equity_order", {"symbol": "AAPL", "side": "buy"})
 
     # Surfaced as an error envelope — never a silent success off a stale token.
     assert result["status"] == "error"

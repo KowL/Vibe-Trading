@@ -1,7 +1,7 @@
 ---
 name: vibe-trading
-version: 0.1.9
-description: Professional finance research toolkit — backtesting (7 engines + benchmark comparison panel), factor analysis, Alpha Zoo (452 pre-built alphas across qlib158/alpha101/gtja191/academic), options pricing, 77 finance skills, 29 multi-agent swarm teams, Trade Journal analyzer, and Shadow Account (extract → backtest → render) across 7 data sources (tushare, yfinance, okx, akshare, mootdx, ccxt, futu).
+version: 0.1.11
+description: Professional finance research toolkit — backtesting (8 engines + benchmark comparison panel), factor analysis, Alpha Zoo (460 pre-built alphas across qlib158/alpha101/gtja191/academic/fundamental), options pricing, 87 finance skills, 30 multi-agent swarm teams, Trade Journal analyzer, and Shadow Account (extract → backtest → render) across 20 market-data sources (tushare, yfinance, okx, akshare, baostock, tencent, mootdx, ccxt, futu, local, eastmoney, sina, stooq, yahoo, india_broker, qveris, plus optional-key finnhub/alphavantage/tiingo/fmp).
 dependencies:
   python: ">=3.11"
   pip:
@@ -23,7 +23,7 @@ mcp:
 
 # Vibe-Trading
 
-Professional finance research toolkit with AI-powered backtesting (7 engines), multi-agent teams, 77 specialized skills, the **Alpha Zoo** (452 pre-built quantitative alphas across qlib158 / alpha101 / gtja191 / academic with one-line CLI benchmarking), and the Shadow Account loop — extract your implicit trading rules from a journal, backtest them across A股/港股/美股/crypto, then see where they would have served you better.
+Professional finance research toolkit with AI-powered backtesting (8 engines), multi-agent teams, 87 specialized skills, the **Alpha Zoo** (460 pre-built quantitative alphas across qlib158 / alpha101 / gtja191 / academic / fundamental with one-line CLI benchmarking), and the Shadow Account loop — extract your implicit trading rules from a journal, backtest them across A股/港股/美股/crypto, then see where they would have served you better.
 
 ## Setup
 
@@ -53,12 +53,13 @@ Add to your agent's MCP config:
 
 ### API Key Requirements
 
-Core research MCP tools work with zero API keys for HK/US/crypto. After `pip install`, backtesting, market data, factor analysis, options pricing, chart patterns, web search, document reading, trade journal analysis, shadow-account extraction/backtest/report, the Alpha Zoo (452 pre-built alphas), and all 77 skills are ready to use. IBKR tools require a local TWS / IB Gateway session; `run_swarm` requires an LLM key.
+Core research MCP tools work with zero API keys for HK/US/crypto. After `pip install`, backtesting, market data, factor analysis, options pricing, chart patterns, web search, document reading, trade journal analysis, shadow-account extraction/backtest/report, the Alpha Zoo (460 pre-built alphas), and all 87 skills are ready to use. IBKR tools require a local TWS / IB Gateway session; `run_swarm` requires an LLM key.
 
 | Feature | Key needed | When |
 |---------|-----------|------|
-| HK/US equities & crypto | None | Always free (yfinance + OKX) |
-| China A-share data | `TUSHARE_TOKEN` | Only if you query A-share symbols |
+| HK/US equities & crypto | None | Always free (yfinance / stooq / yahoo + OKX) |
+| China A-share data | None | Free via akshare / baostock / tencent / sina / eastmoney / mootdx fallback (`TUSHARE_TOKEN` optional for premium quality) |
+| Premium US fundamentals/quotes | `FINNHUB_API_KEY` / `ALPHAVANTAGE_API_KEY` / `TIINGO_API_KEY` / `FMP_API_KEY` | Only for optional-key providers (graceful fallback to free sources) |
 | Multi-agent swarm (`run_swarm`) | `OPENAI_API_KEY` + `LANGCHAIN_MODEL_NAME` | Swarm spawns internal LLM workers |
 
 ## What You Can Do
@@ -73,12 +74,18 @@ Feed a CSV broker export (同花顺 / 东财 / 富途 / generic), and the agent 
 5. `scan_shadow_signals` — list today's symbols that match your shadow's entry cadence (research only).
 
 ### Backtesting
-Create and run quantitative strategies across 7 engines (ChinaA, GlobalEquity, Crypto, ChinaFutures, GlobalFutures, Forex + options) with 7 data sources:
-- **HK/US equities** via yfinance (free, no API key)
+Create and run quantitative strategies across 8 engines (ChinaA, GlobalEquity, IndiaEquity, Crypto, ChinaFutures, GlobalFutures, Forex + options) with 20 market-data sources (auto-detect + ordered fallback):
+- **HK/US equities** via yfinance / stooq / yahoo (free, no API key)
+- **India equities (NSE/BSE)** via yahoo / yfinance using `<SYMBOL>.NS` (NSE, e.g. `RELIANCE.NS`) or `<SCRIP>.BO` (BSE, e.g. `500325.BO`) — free, no API key. The `IndiaEquityEngine` models T+1 delivery, no overnight shorts (set `allow_short` for intraday), configurable circuit bands, 1-share lots, and the STT/stamp-duty/exchange/GST cost stack. Optionally back-fill from your live broker via the `india_broker` source (Shoonya/Dhan; requires broker login).
 - **Cryptocurrency** via OKX or CCXT/100+ exchanges (free, no API key)
-- **China A-shares** via Tushare (token) or AKShare (free fallback)
+- **China A-shares** via AKShare / baostock / tencent / sina / eastmoney / mootdx (free, no API key) — `TUSHARE_TOKEN` optional for premium quality
 - **Futures, forex, macro** via AKShare (free, no API key)
 - **HK & A-share equities** via Futu (broker login required, optional)
+- **Local CSV/parquet bars** via the `local` loader (offline, no network)
+- **Premium cross-market data** via QVeris (optional API key)
+- **Premium US data** via optional-key finnhub / alphavantage / tiingo / fmp (graceful fallback to free sources)
+
+Factors: the Alpha101 and QLib158 zoos are tagged for the `equity_in` universe, so they compute on NSE/BSE bars (the GTJA191 zoo stays China-only). Live/paper India trading uses the Shoonya / Dhan connectors (paper + read-only live; live order placement is structurally disabled because those brokers expose no paper/live switch).
 
 Example workflow:
 1. Use `list_skills()` to discover strategy patterns
@@ -87,7 +94,7 @@ Example workflow:
 4. Use `backtest()` to run and get metrics (Sharpe, return, drawdown, etc.)
 
 ### Multi-Agent Swarm Teams
-29 pre-built agent teams for complex research:
+30 pre-built agent teams for complex research:
 - **Investment Committee**: bull/bear debate → risk review → PM decision
 - **Global Equities Desk**: A-share + HK/US + crypto → global strategist
 - **Crypto Trading Desk**: funding/basis + liquidation + flow → risk manager
@@ -95,20 +102,21 @@ Example workflow:
 - **Macro/Rates/FX Desk**: rates + FX + commodities → macro PM
 - **Quant Strategy Desk**: screening → factor research → backtest → risk audit
 - **Risk Committee**: drawdown, tail risk, regime analysis
-- And 22 more specialized teams
+- And 23 more specialized teams
 
 Use `list_swarm_presets()` to see all teams, then `run_swarm()` to execute.
 
-### Alpha Zoo (452 pre-built alphas)
-One-line cross-sectional IC / IR / alive-reversed-dead categorisation across four bundled zoos:
+### Alpha Zoo (460 pre-built alphas)
+One-line cross-sectional IC / IR / alive-reversed-dead categorisation across five bundled zoos:
 - **qlib158** (154 alphas) — Microsoft Qlib's `Alpha158` feature handler, Apache-2.0 with pinned commit SHA.
 - **alpha101** (101 alphas) — Kakushadze (2015) "101 Formulaic Alphas" (arXiv:1601.00991), written from the paper appendix.
 - **gtja191** (191 alphas) — Guotai Junan 2014 "191 Short-period Trading Alpha Factors" research report.
-- **academic** (6 factors) — Fama-French 5 + Carhart momentum (honest price-based proxies).
+- **academic** (10 factors) — Fama-French 5 + Carhart momentum + Jegadeesh reversal + George-Hwang 52-week-high + Amihud illiquidity + Harvey-Siddique skew (price-based proxies).
+- **fundamental** (4 factors) — PIT-safe earnings yield, ROE, gross profitability, and asset growth from daily fundamental panels.
 
 Each alpha ships with `__alpha_meta__` (formula LaTeX + theme + universe + warmup + columns required), guarded by an AST purity gate + 300-row lookahead sentinel test. Use the `vibe-trading alpha {list,show,bench,compare,export-manifest}` CLI, the `/alpha/*` REST routes (browser at `/alpha-zoo`), or compose multi-factor signals via `ZooSignalEngine.from_zoo(...)`.
 
-### Finance Skills (77)
+### Finance Skills (87)
 Comprehensive knowledge base covering:
 - Technical analysis (candlestick, Elliott wave, Ichimoku, SMC, harmonic, chanlun)
 - Quantitative methods (factor research, ML strategy, pair trading, multi-factor)
@@ -121,11 +129,11 @@ Comprehensive knowledge base covering:
 
 Use `load_skill(name)` to access full methodology docs with code templates.
 
-## Available MCP Tools (35)
+## Available MCP Tools (54)
 
 | Tool | Description | API Key |
 |------|-------------|---------|
-| `list_skills` | List all 77 finance skills | None |
+| `list_skills` | List all 87 finance skills | None |
 | `load_skill` | Load full skill documentation | None |
 | `start_research_goal` | Create an auditable research goal | None |
 | `get_research_goal` | Read the current research goal | None |
@@ -135,7 +143,25 @@ Use `load_skill(name)` to access full methodology docs with code templates.
 | `factor_analysis` | IC/IR analysis + layered backtest | None* |
 | `analyze_options` | Black-Scholes price + Greeks | None |
 | `pattern_recognition` | Detect chart patterns (H&S, double top, etc.) | None |
-| `get_market_data` | Fetch OHLCV data across 6 sources (auto-detect + fallback) | None* |
+| `get_market_data` | Fetch OHLCV data (auto-detect + ordered fallback across 20 sources) | None* |
+| `get_fund_flow` | Capital fund-flow (main/retail net inflow) | None* |
+| `get_dragon_tiger` | Dragon-tiger list (龙虎榜) top buyer/seller seats | None* |
+| `get_northbound_flow` | Northbound (Stock Connect) net flow | None* |
+| `get_margin_trading` | Margin trading & short-selling balances | None* |
+| `get_block_trades` | Block-trade (大宗交易) records | None* |
+| `get_shareholder_count` | Shareholder-count history per symbol | None* |
+| `get_lockup_expiry` | Restricted-share lockup release schedule | None* |
+| `get_sector_info` | Sector / industry constituents & performance | None* |
+| `get_research_reports` | Sell-side analyst research reports | None* |
+| `get_stock_news` | Market & company news headlines | None* |
+| `get_sec_filings` | SEC EDGAR filings (10-K/10-Q/8-K, etc.) | None |
+| `get_financial_statements` | Income / balance / cash-flow statements | None* |
+| `get_options_chain` | Options chain (strikes, IV, OI, Greeks) | None* |
+| `get_stock_profile` | Valuation, analyst estimates & institutional holdings (US/HK) | None |
+| `screen_market` | Market screener with fundamental/technical filters | None* |
+| `search_symbol` | Symbol / ticker search across markets | None |
+| `get_macro_series` | FRED macroeconomic series | FRED_API_KEY |
+| `iwencai_search` | A-share natural-language research search | IWENCAI_KEY |
 | `web_search` | Search the web via DuckDuckGo | None |
 | `read_url` | Fetch web page as Markdown | None |
 | `read_document` | Extract text from PDF/DOCX/XLSX/PPTX/images | None |
@@ -152,6 +178,7 @@ Use `load_skill(name)` to access full methodology docs with code templates.
 | `get_run_result` | Get final report and task summaries | None |
 | `list_runs` | List recent swarm runs with metadata | None |
 | `reap_stale_runs` | Finalize stale swarm runs | None |
+| `retry_run` | Re-run a failed/stale swarm run | LLM key |
 | `trading_connections` | List selectable connector profiles | None |
 | `trading_select_connection` | Select the default connector profile | None |
 | `trading_check` | Check connector readiness | Connector app/OAuth |
@@ -169,7 +196,7 @@ Use `load_skill(name)` to access full methodology docs with code templates.
 pip install vibe-trading-ai
 ```
 
-That's it — no API keys needed for HK/US/crypto markets. Start using `backtest`, `get_market_data`, `analyze_options`, `analyze_trade_journal`, `extract_shadow_strategy`, `web_search`, the **Alpha Zoo** (`vibe-trading alpha bench --zoo gtja191 --universe csi300 --period 2018-2025`), and all 77 skills immediately.
+That's it — no API keys needed for HK/US/crypto markets. Start using `backtest`, `get_market_data`, `analyze_options`, `analyze_trade_journal`, `extract_shadow_strategy`, `web_search`, the **Alpha Zoo** (`vibe-trading alpha bench --zoo gtja191 --universe csi300 --period 2018-2025`), and all 87 skills immediately.
 
 ## Loading Tools from External MCP Servers
 

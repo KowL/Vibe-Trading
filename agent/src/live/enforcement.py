@@ -58,10 +58,15 @@ _ASSET_CLASS_MARKET: dict[AssetClass, str] = {
     AssetClass.US_EQUITY: "us_equity",
     AssetClass.US_ETF: "us_equity",
     AssetClass.HK_EQUITY: "hk_equity",
+    AssetClass.IN_EQUITY: "india_equity",
     AssetClass.CRYPTO: "crypto",
     # CN_EQUITY has no loader market wired here, so market-cap / liquidity floors
     # for A-shares fail closed (deny) rather than wave through — intentional. If
     # ever wired, the registry's A-share market key is "a_share" (not "cn_equity").
+    # IN_EQUITY routes to the "india_equity" loader chain (Yahoo) for liquidity
+    # floors; market-cap floors stay US-only (see ``market_cap_usd``), so an
+    # India market-cap floor fails closed like CN — intentional until a metadata
+    # source is wired.
 }
 
 #: Breach ``kind`` values. ``universe``/``instrument`` are structural (DENY);
@@ -707,3 +712,12 @@ def market_cap_usd(symbol: str, asset_class: AssetClass) -> float | None:
     cap = info.get("marketCap")
     parsed = _as_float(cap)
     return parsed if parsed and parsed > 0 else None
+
+
+# -- Public aliases for cross-module use (advisory layer) --------------------
+# These expose internal helpers to the advisory module without requiring
+# callers to import underscore-prefixed private names.
+
+account_balance_market_value = _account_balance_market_value
+coerce_position_rows = _coerce_position_rows
+positions_market_value = _positions_market_value

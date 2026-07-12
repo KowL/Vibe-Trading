@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from src.config.accessor import get_env_config
+from src.providers.content_filter import is_content_filter_triggered
 from src.providers.llm import build_llm
 
 
@@ -35,12 +37,15 @@ class ToolCallRequest:
         name: Tool name.
         arguments: Tool argument dict.
         thought_signature: Gemini thinking-model signature to echo on the next turn.
+        extra_content: Provider-specific tool-call metadata that must be
+            replayed with the assistant turn, such as Gemini thought signatures.
     """
 
     id: str
     name: str
     arguments: Dict[str, Any]
     thought_signature: Optional[str] = None
+    extra_content: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -57,6 +62,9 @@ class LLMResponse:
             ``{"input_tokens": int, "output_tokens": int, "total_tokens": int}``.
             ``None`` if the provider did not return usage information; callers
             should fall back to a heuristic in that case.
+        content_filter_triggered: ``True`` when the provider blocked the
+            response via content moderation (e.g. DashScope/Qwen content
+            moderation filter, ``finish_reason == "content_filter"``).
     """
 
     content: Optional[str] = None
@@ -64,6 +72,7 @@ class LLMResponse:
     reasoning_content: Optional[str] = None
     finish_reason: str = "stop"
     usage_metadata: Optional[Dict[str, int]] = None
+    content_filter_triggered: bool = False
 
     @property
     def has_tool_calls(self) -> bool:
@@ -296,8 +305,9 @@ class ChatLLM:
                 on_text_chunk(pending_text)
             return response
         except Exception as exc:
-            provider = os.getenv("LANGCHAIN_PROVIDER", "openai").strip().lower() or "openai"
-            model = self.model_name or os.getenv("LANGCHAIN_MODEL_NAME", "").strip() or "(unset)"
+            _cfg = get_env_config()
+            provider = _cfg.llm.langchain_provider.strip().lower() or "openai"
+            model = self.model_name or _cfg.llm.langchain_model_name.strip() or "(unset)"
             raise ProviderStreamError(provider=provider, model=model, original=exc) from exc
 
     @staticmethod
@@ -350,32 +360,95 @@ class ChatLLM:
                 usage = dict(usage)
             except (TypeError, ValueError):
                 usage = None
+        additional_kwargs = getattr(ai_message, "additional_kwargs", {}) or {}
         thought_signatures_by_id, thought_signatures_by_index = (
             ChatLLM._tool_call_thought_signature_maps(ai_message)
         )
-        native_tool_calls = [
-            ToolCallRequest(
-                id=tc["id"],
-                name=tc["name"],
-                arguments=tc["args"],
-                thought_signature=thought_signatures_by_id.get(str(tc["id"]))
-                or thought_signatures_by_index.get(index),
+        raw_tool_calls = additional_kwargs.get("tool_calls") or []
+        raw_by_id = {
+            raw.get("id"): raw
+            for raw in raw_tool_calls
+            if isinstance(raw, dict) and raw.get("id")
+        }
+
+        native_tool_calls: list[ToolCallRequest] = []
+        for index, tc in enumerate(ai_message.tool_calls):
+            extra_content = _merge_tool_call_extra_content(tc, raw_by_id.get(tc["id"]))
+            signature = (
+                thought_signatures_by_id.get(str(tc["id"]))
+                or thought_signatures_by_index.get(index)
+                or extra_content.get("thought_signature")
             )
-            for index, tc in enumerate(ai_message.tool_calls)
-        ]
+            if signature:
+                extra_content.setdefault("thought_signature", signature)
+            native_tool_calls.append(
+                ToolCallRequest(
+                    id=tc["id"],
+                    name=tc["name"],
+                    arguments=tc["args"],
+                    thought_signature=signature,
+                    extra_content=extra_content,
+                )
+            )
+
         dsml_tool_calls = [] if native_tool_calls else _parse_dsml_tool_calls(ai_message.content)
         tool_calls = native_tool_calls or dsml_tool_calls
+
+        finish_reason = (
+            "tool_calls"
+            if dsml_tool_calls
+            else _dedupe_finish_reason(
+                ai_message.response_metadata.get("finish_reason", "stop")
+            )
+        )
+        content_filter_triggered = is_content_filter_triggered(
+            ai_message.response_metadata.get("finish_reason")
+        )
 
         return LLMResponse(
             content="" if dsml_tool_calls else ai_message.content,
             tool_calls=tool_calls,
-            reasoning_content=ai_message.additional_kwargs.get("reasoning_content"),
-            finish_reason=(
-                "tool_calls"
-                if dsml_tool_calls
-                else _dedupe_finish_reason(
-                    ai_message.response_metadata.get("finish_reason", "stop")
-                )
-            ),
+            reasoning_content=additional_kwargs.get("reasoning_content"),
+            finish_reason=finish_reason,
             usage_metadata=usage,
+            content_filter_triggered=content_filter_triggered,
         )
+
+
+def _extract_tool_call_extra_content(raw_tool_call: Any) -> Dict[str, Any]:
+    """Extract provider-specific tool-call metadata LangChain would drop."""
+    if not isinstance(raw_tool_call, dict):
+        return {}
+
+    extra_content: Dict[str, Any] = {}
+    raw_extra = raw_tool_call.get("extra_content")
+    if isinstance(raw_extra, dict):
+        extra_content.update(raw_extra)
+        google_extra = raw_extra.get("google")
+        if isinstance(google_extra, dict):
+            signature = google_extra.get("thought_signature") or google_extra.get(
+                "thoughtSignature"
+            )
+            if signature:
+                extra_content["thought_signature"] = signature
+
+    function = raw_tool_call.get("function")
+    if isinstance(function, dict):
+        function_extra = function.get("extra_content")
+        if isinstance(function_extra, dict):
+            extra_content.update(function_extra)
+        if function.get("thought_signature"):
+            extra_content["thought_signature"] = function["thought_signature"]
+
+    if raw_tool_call.get("thought_signature"):
+        extra_content["thought_signature"] = raw_tool_call["thought_signature"]
+
+    return extra_content
+
+
+def _merge_tool_call_extra_content(*raw_tool_calls: Any) -> Dict[str, Any]:
+    """Merge provider metadata from standardized and raw tool-call shapes."""
+    extra_content: Dict[str, Any] = {}
+    for raw_tool_call in raw_tool_calls:
+        extra_content.update(_extract_tool_call_extra_content(raw_tool_call))
+    return extra_content

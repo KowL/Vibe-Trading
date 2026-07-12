@@ -13,11 +13,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ROWS = 250
 
+# Symbol -> preferred source. The matched source is the head of its market's
+# fallback chain (registry.FALLBACK_CHAINS), so an unavailable preferred source
+# still degrades gracefully to the rest of the chain. US/HK equities route to
+# the throttle-tolerant Yahoo public endpoint first (lower IP-ban risk than the
+# yfinance SDK), A-shares to the Tencent quote endpoint.
 _SOURCE_PATTERNS = [
     (re.compile(r"^local:", re.I), "local"),
-    (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "tushare"),
-    (re.compile(r"^[A-Z]+\.US$", re.I), "yfinance"),
-    (re.compile(r"^\d{3,5}\.HK$", re.I), "yfinance"),
+    (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "tencent"),
+    (re.compile(r"^[A-Z]+\.US$", re.I), "yahoo"),
+    (re.compile(r"^\d{3,5}\.HK$", re.I), "yahoo"),
+    # India: NSE (RELIANCE.NS) / BSE (500325.BO). Tickers may carry '&' and '-'
+    # (e.g. M&M.NS, BAJAJ-AUTO.NS). Served by Yahoo's public chart endpoint.
+    (re.compile(r"^[A-Z0-9&.\-]+\.(NS|BO)$", re.I), "yahoo"),
     (re.compile(r"^[A-Z]+-USDT$", re.I), "okx"),
     (re.compile(r"^[A-Z]+/USDT$", re.I), "ccxt"),
 ]

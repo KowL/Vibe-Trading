@@ -47,6 +47,59 @@ def validate_date_range(start_date: str, end_date: str) -> None:
         raise ValueError(f"start_date ({start_date}) > end_date ({end_date})")
 
 
+def validate_ohlc(frame: pd.DataFrame, *, strategy: str = "drop") -> pd.DataFrame:
+    """Drop, flag, or reject bars that violate OHLC invariants.
+
+    Loaders only drop NaN rows, so structurally dirty bars — ``high < low``,
+    a non-positive price, or a high/low that fails to bracket open/close —
+    flow straight into the backtest and surface downstream as NaN/inf metrics
+    that break the strict (``allow_nan=False``) JSON serializers. This is the
+    canonical loader-boundary check; call it after the existing ``dropna`` so a
+    single sanity pass guards every source.
+
+    Args:
+        frame: OHLCV frame with at least ``open``/``high``/``low``/``close``
+            columns. NaN handling is left to the caller's ``dropna``.
+        strategy: ``"drop"`` (remove offending rows, default), ``"warn"``
+            (log and keep), or ``"raise"`` (raise on any violation).
+
+    Returns:
+        The frame with invalid rows removed (``"drop"``) or unchanged
+        (``"warn"``). A frame that is empty or lacks OHLC columns is returned
+        as-is.
+
+    Raises:
+        ValueError: ``strategy="raise"`` and at least one bar is invalid.
+    """
+    required = ("open", "high", "low", "close")
+    if frame.empty or not all(col in frame.columns for col in required):
+        return frame
+
+    open_, high, low, close = (frame[c] for c in required)
+    invalid = (
+        (high < low)
+        | (high < open_)
+        | (high < close)
+        | (low > open_)
+        | (low > close)
+        | (open_ <= 0)
+        | (high <= 0)
+        | (low <= 0)
+        | (close <= 0)
+    )
+    n_invalid = int(invalid.sum())
+    if n_invalid == 0:
+        return frame
+
+    if strategy == "raise":
+        raise ValueError(f"{n_invalid} bar(s) violate OHLC invariants")
+    if strategy == "warn":
+        logger.warning("OHLC validation: %d bar(s) violate invariants (kept)", n_invalid)
+        return frame
+    logger.warning("OHLC validation: dropping %d invalid bar(s)", n_invalid)
+    return frame[~invalid]
+
+
 # ---------------------------------------------------------------------------
 # Bounded retry / budget helpers (shared by ccxt_loader, okx, and any future
 # loader calling a flaky external API).
@@ -58,7 +111,7 @@ DEFAULT_MAX_RETRIES = 3
 
 def positive_env_int(name: str, default: int) -> int:
     """Read a positive integer env var, warning and falling back on invalid values."""
-    raw = os.getenv(name)
+    raw = os.getenv(name)  # noqa: env-gate — generic env var helper
     if raw is None or not raw.strip():
         return default
     try:
@@ -74,7 +127,7 @@ def positive_env_int(name: str, default: int) -> int:
 
 def positive_env_float(name: str, default: float) -> float:
     """Read a positive float env var, warning and falling back on invalid values."""
-    raw = os.getenv(name)
+    raw = os.getenv(name)  # noqa: env-gate — generic env var helper
     if raw is None or not raw.strip():
         return default
     try:
@@ -169,15 +222,28 @@ def retry_with_budget(
 # ---------------------------------------------------------------------------
 
 LOADER_CACHE_ENV = "VIBE_TRADING_DATA_CACHE"
+LOADER_CACHE_ROOT_ENV = "VIBE_TRADING_DATA_CACHE_ROOT"
 _LOADER_CACHE_TRUE_VALUES = {"1", "true", "yes", "on"}
 # Bump when the key payload or on-disk layout changes so stale entries are
 # simply never matched (old files become unreachable garbage, safe to delete).
-_LOADER_CACHE_VERSION = 2
+_LOADER_CACHE_VERSION = 3
 
 
 def loader_cache_enabled() -> bool:
     """Return whether the local market-data cache is explicitly enabled."""
-    return os.getenv(LOADER_CACHE_ENV, "").strip().lower() in _LOADER_CACHE_TRUE_VALUES
+    from src.config.accessor import get_env_config
+
+    return get_env_config().data.vibe_trading_data_cache
+
+
+def loader_cache_root() -> Path:
+    """Return the root directory for opt-in loader cache files."""
+    from src.config.accessor import get_env_config
+
+    root = get_env_config().data.vibe_trading_data_cache_root
+    if root and root.strip():
+        return Path(root).expanduser()
+    return Path.home() / ".vibe-trading" / "cache" / "loaders"
 
 
 def make_loader_cache_key(
@@ -221,7 +287,7 @@ def loader_cache_path(
         fields=fields,
     )
     source_dir = _sanitize_cache_segment(source)
-    return Path.home() / ".vibe-trading" / "cache" / "loaders" / source_dir / f"{key}.parquet"
+    return loader_cache_root() / source_dir / f"{key}.parquet"
 
 
 def loader_cache_range_is_final(end_date: str) -> bool:

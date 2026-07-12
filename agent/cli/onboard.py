@@ -57,10 +57,20 @@ PROVIDERS: Final[tuple[Provider, ...]] = (
              "https://openrouter.ai/api/v1", "sk-or-",
              ("deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash",
               "openai/gpt-5.5-pro", "google/gemini-3.5-flash")),
+    Provider("requesty", "Requesty", "OpenAI-compatible gateway — 600+ models, one key",
+             "openai/gpt-4o-mini",
+             "REQUESTY_API_KEY", "REQUESTY_BASE_URL",
+             "https://router.requesty.ai/v1", None,
+             ("openai/gpt-4o-mini", "openai/gpt-4o",
+              "anthropic/claude-sonnet-4-5", "deepseek/deepseek-chat")),
     Provider("openai", "OpenAI", "GPT-5.5 direct",
-             "gpt-5.5-instant", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+             "gpt-5.5", "OPENAI_API_KEY", "OPENAI_BASE_URL",
              "https://api.openai.com/v1", "sk-",
-             ("gpt-5.5-instant", "gpt-5.5-pro", "gpt-5.5")),
+             ("gpt-5.5", "gpt-5.5-pro", "gpt-5.5-instant")),
+    Provider("openai-codex", "OpenAI Codex", "ChatGPT OAuth for Codex",
+             "openai-codex/gpt-5.4", None, "OPENAI_CODEX_BASE_URL",
+             "https://chatgpt.com/backend-api/codex/responses", None,
+             ("openai-codex/gpt-5.4", "openai-codex/gpt-5.4-mini")),
     Provider("deepseek", "DeepSeek",
              "cheapest tier — good for batch backtest research",
              "deepseek-v4-pro", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL",
@@ -181,26 +191,31 @@ def _select_with_back(prompt: str, choices: Sequence[tuple[str, str]], *,
     @kb.add("up")
     @kb.add("c-p")
     def _(event):  # type: ignore[no-redef]
-        state["index"] = (state["index"] - 1) % len(choices); event.app.invalidate()
+        state["index"] = (state["index"] - 1) % len(choices)
+        event.app.invalidate()
 
     @kb.add("down")
     @kb.add("c-n")
     def _(event):  # type: ignore[no-redef]
-        state["index"] = (state["index"] + 1) % len(choices); event.app.invalidate()
+        state["index"] = (state["index"] + 1) % len(choices)
+        event.app.invalidate()
 
     @kb.add("enter")
     def _(event):  # type: ignore[no-redef]
-        state["result"] = choices[state["index"]][0]; event.app.exit()
+        state["result"] = choices[state["index"]][0]
+        event.app.exit()
 
     @kb.add("escape", eager=True)
     @kb.add("left")
     def _(event):  # type: ignore[no-redef]
-        state["result"] = BACK; event.app.exit()
+        state["result"] = BACK
+        event.app.exit()
 
     @kb.add("c-c")
     @kb.add("c-d")
     def _(event):  # type: ignore[no-redef]
-        state["result"] = CANCEL; event.app.exit()
+        state["result"] = CANCEL
+        event.app.exit()
 
     style = PTStyle.from_dict({
         "cursor": f"{Theme.brand_hex} bold",
@@ -228,9 +243,12 @@ def _select_numeric(choices: Sequence[tuple[str, str]], default_index: int,
         raw = input("> ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return CANCEL
-    if raw in {"b", "back"}: return BACK
-    if raw in {"q", "quit", "cancel"}: return CANCEL
-    if not raw: return choices[default_index][0]
+    if raw in {"b", "back"}:
+        return BACK
+    if raw in {"q", "quit", "cancel"}:
+        return CANCEL
+    if not raw:
+        return choices[default_index][0]
     try:
         idx = int(raw)
         if 1 <= idx <= len(choices):
@@ -263,7 +281,8 @@ def _prompt_secret(prompt: str, *, console: Console) -> str | object:
 
         @kb.add("escape", eager=True)
         def _(event):  # type: ignore[no-redef]
-            sentinel["action"] = BACK; event.app.exit(result="")
+            sentinel["action"] = BACK
+            event.app.exit(result="")
 
         try:
             value = pt_prompt("> ", is_password=True, key_bindings=kb)
@@ -300,7 +319,8 @@ def _prompt_text(prompt: str, *, default: str = "",
 
         @kb.add("escape", eager=True)
         def _(event):  # type: ignore[no-redef]
-            sentinel["action"] = BACK; event.app.exit(result="")
+            sentinel["action"] = BACK
+            event.app.exit(result="")
 
         try:
             value = pt_prompt("> ", key_bindings=kb)
@@ -401,8 +421,18 @@ def run_onboarding(*, console: Console | None = None) -> Path | None:
         provider: Provider = state["provider"]  # type: ignore[assignment]
         if provider.key_env is None:
             cons.print()
-            cons.print(Text("  Ollama runs locally — no API key needed.",
-                             style=Theme.success))
+            if provider.key == "openai-codex":
+                cons.print(Text(
+                    "  OpenAI Codex uses ChatGPT OAuth — no API key needed here.",
+                    style=Theme.success,
+                ))
+                cons.print(Text(
+                    "  After setup, run: vibe-trading provider login openai-codex",
+                    style=Theme.muted,
+                ))
+            else:
+                cons.print(Text("  Ollama runs locally — no API key needed.",
+                                 style=Theme.success))
             return "ok"
         while True:
             key = _prompt_secret(

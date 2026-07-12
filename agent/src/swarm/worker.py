@@ -20,6 +20,11 @@ from src.agent.skills import SkillsLoader
 from src.agent.tools import ToolRegistry
 from src.config.schema import AgentConfig
 from src.providers.chat import ChatLLM, LLMResponse, ProviderStreamError
+from src.providers.content_filter import (
+    CONTENT_FILTER_SKIP_MESSAGE,
+    MAX_CONSECUTIVE_CONTENT_FILTER_SKIPS,
+    compute_content_filter_warnings,
+)
 from src.swarm.models import (
     SwarmAgentSpec,
     SwarmEvent,
@@ -32,8 +37,14 @@ from src.tools.redaction import is_sensitive_arg, redact_payload
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_ITERATIONS = int(os.getenv("SWARM_WORKER_MAX_ITER", "50"))
-_DEFAULT_TIMEOUT_SECONDS = int(os.getenv("SWARM_WORKER_TIMEOUT", "300"))
+def _default_max_iterations() -> int:
+    from src.config.accessor import get_env_config
+    return get_env_config().swarm.swarm_worker_max_iter
+
+
+def _default_timeout_seconds() -> int:
+    from src.config.accessor import get_env_config
+    return get_env_config().swarm.swarm_worker_timeout
 
 
 def _heartbeat_interval_s() -> float:
@@ -43,10 +54,9 @@ def _heartbeat_interval_s() -> float:
     — both sides use the same env var, so they must fail the same way. A bad
     value (``"abc"``, empty) falls back to 3.0s instead of crashing import.
     """
-    try:
-        return float(os.getenv("SWARM_HEARTBEAT_INTERVAL_S", "3.0"))
-    except ValueError:
-        return 3.0
+    from src.config.accessor import get_env_config
+
+    return get_env_config().swarm.swarm_heartbeat_interval_s
 
 
 def _stream_retry_delay_s() -> float:
@@ -57,10 +67,9 @@ def _stream_retry_delay_s() -> float:
         retry. Configurable via ``SWARM_STREAM_RETRY_DELAY_S``; a bad value
         falls back to 1.0s instead of crashing import.
     """
-    try:
-        return float(os.getenv("SWARM_STREAM_RETRY_DELAY_S", "1.0"))
-    except ValueError:
-        return 1.0
+    from src.config.accessor import get_env_config
+
+    return get_env_config().swarm.swarm_stream_retry_delay_s
 
 
 _HEARTBEAT_INTERVAL_S = _heartbeat_interval_s()
@@ -276,10 +285,10 @@ def build_worker_prompt(
         "- Respond in the same language as the task prompt."
     )
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     prompt_parts.append(
         f"## Current Date & Time\n\n"
-        f"Today is {now.strftime('%A, %B %d, %Y %H:%M (local)')}."
+        f"Today is {now.strftime('%A, %B %d, %Y %H:%M UTC')}"
     )
 
     return "\n\n".join(prompt_parts)
@@ -329,8 +338,8 @@ def run_worker(
     """
     agent_id = agent_spec.id
     task_id = task.id
-    max_iterations = agent_spec.max_iterations or _DEFAULT_MAX_ITERATIONS
-    timeout = agent_spec.timeout_seconds or _DEFAULT_TIMEOUT_SECONDS
+    max_iterations = agent_spec.max_iterations or _default_max_iterations()
+    timeout = agent_spec.timeout_seconds or _default_timeout_seconds()
 
     _emit(event_callback, "worker_started", agent_id, task_id)
 
@@ -392,6 +401,8 @@ def run_worker(
 
     _KEEP_RECENT_TOOLS = 3
     data_tool_calls = 0
+    content_filter_count = 0
+    consecutive_content_filter_count = 0
 
     for iteration in range(max_iterations):
         # Microcompact: clear old tool results to prevent token bloat
@@ -417,6 +428,9 @@ def run_worker(
                 iterations=iteration,
                 input_tokens=total_input_tokens,
                 output_tokens=total_output_tokens,
+                content_filter_warnings=compute_content_filter_warnings(
+                    content_filter_count, iteration + 1,
+                ),
             )
 
         # Check token estimate
@@ -433,6 +447,9 @@ def run_worker(
                 iterations=iteration,
                 input_tokens=total_input_tokens,
                 output_tokens=total_output_tokens,
+                content_filter_warnings=compute_content_filter_warnings(
+                    content_filter_count, iteration + 1,
+                ),
             )
 
         # Inject wrap-up nudge when approaching iteration limit
@@ -535,6 +552,9 @@ def run_worker(
                 error=error_msg,
                 input_tokens=total_input_tokens,
                 output_tokens=total_output_tokens,
+                content_filter_warnings=compute_content_filter_warnings(
+                    content_filter_count, iteration + 1,
+                ),
             )
 
         # Accumulate token counts
@@ -545,6 +565,52 @@ def run_worker(
         # Track last meaningful assistant content
         if response.content and len(response.content.strip()) > 20:
             last_assistant_content = response.content
+
+        # Content-filter skip: provider blocked the response — continue to
+        # the next iteration instead of finalising on empty/garbage content.
+        if response.content_filter_triggered:
+            content_filter_count += 1
+            consecutive_content_filter_count += 1
+            if consecutive_content_filter_count >= MAX_CONSECUTIVE_CONTENT_FILTER_SKIPS:
+                _emit(
+                    event_callback,
+                    "content_filter_circuit_breaker",
+                    agent_id,
+                    task_id,
+                    {"count": content_filter_count},
+                )
+                summary = _resolve_summary(artifact_dir, last_assistant_content or "")
+                _write_summary(artifact_dir, summary)
+                return WorkerResult(
+                    status="failed",
+                    summary=summary,
+                    artifact_paths=_collect_artifacts(artifact_dir),
+                    iterations=iteration + 1,
+                    error=(
+                        f"content_filter_circuit_breaker: "
+                        f"{MAX_CONSECUTIVE_CONTENT_FILTER_SKIPS} consecutive "
+                        "LLM responses were blocked by content moderation"
+                    ),
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                    content_filter_warnings=compute_content_filter_warnings(
+                        content_filter_count, iteration + 1,
+                    ),
+                )
+            _emit(
+                event_callback,
+                "content_filter_skipped",
+                agent_id,
+                task_id,
+                {"iteration": iteration, "content_filter_count": content_filter_count},
+            )
+            messages.append({
+                "role": "system",
+                "content": CONTENT_FILTER_SKIP_MESSAGE,
+            })
+            continue
+
+        consecutive_content_filter_count = 0
 
         # If no tool calls, this is the final response
         if not response.has_tool_calls:
@@ -568,6 +634,9 @@ def run_worker(
                     error=f"output contract not met: {reason}",
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
+                    content_filter_warnings=compute_content_filter_warnings(
+                        content_filter_count, iteration + 1,
+                    ),
                 )
             _emit(event_callback, "worker_completed", agent_id, task_id, {"iterations": iteration + 1})
             return WorkerResult(
@@ -577,6 +646,9 @@ def run_worker(
                 iterations=iteration + 1,
                 input_tokens=total_input_tokens,
                 output_tokens=total_output_tokens,
+                content_filter_warnings=compute_content_filter_warnings(
+                    content_filter_count, iteration + 1,
+                ),
             )
 
         # Append assistant message with tool calls
@@ -633,6 +705,11 @@ def run_worker(
                 ContextBuilder.format_tool_result(tc.id, tc.name, result[:10_000])
             )
 
+    # Content filter ratio tracking
+    content_filter_warnings = compute_content_filter_warnings(
+        content_filter_count, iteration + 1,
+    )
+
     # Hit iteration limit — use last meaningful content as summary
     summary = _best_summary(messages, last_assistant_content) or f"Worker hit iteration limit ({max_iterations} iterations)"
     summary = _resolve_summary(artifact_dir, summary)
@@ -655,6 +732,7 @@ def run_worker(
             error=f"hit iteration limit without a valid deliverable: {reason}",
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            content_filter_warnings=content_filter_warnings,
         )
     _emit(event_callback, "worker_iteration_limit", agent_id, task_id)
     return WorkerResult(
@@ -664,6 +742,7 @@ def run_worker(
         iterations=max_iterations,
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
+        content_filter_warnings=content_filter_warnings,
     )
 
 
